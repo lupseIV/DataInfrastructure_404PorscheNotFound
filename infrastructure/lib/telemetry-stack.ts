@@ -1,11 +1,17 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import { PROCESSOR_TIMEOUT, TelemetryFunctions } from './constructs/telemetry-functions';
 import { TelemetryQueue } from './constructs/telemetry-queue';
 import { TelemetryTables } from './constructs/telemetry-tables';
 
 export interface TelemetryStackProps extends cdk.StackProps {
   /** Prefix used when naming resources, e.g. "fleet-telemetry". */
   readonly projectName: string;
+  /**
+   * Max instances per Lambda function (reserved concurrency). 0 disables reservation.
+   * @default 2
+   */
+  readonly lambdaReservedConcurrency?: number;
 }
 
 /**
@@ -16,6 +22,7 @@ export interface TelemetryStackProps extends cdk.StackProps {
 export class TelemetryStack extends cdk.Stack {
   public readonly tables: TelemetryTables;
   public readonly events: TelemetryQueue;
+  public readonly functions: TelemetryFunctions;
 
   constructor(scope: Construct, id: string, props: TelemetryStackProps) {
     super(scope, id, props);
@@ -26,6 +33,14 @@ export class TelemetryStack extends cdk.Stack {
 
     this.events = new TelemetryQueue(this, 'Events', {
       projectName: props.projectName,
+      processorTimeout: PROCESSOR_TIMEOUT,
+    });
+
+    this.functions = new TelemetryFunctions(this, 'Functions', {
+      projectName: props.projectName,
+      tables: this.tables,
+      events: this.events,
+      reservedConcurrency: props.lambdaReservedConcurrency,
     });
 
     new cdk.CfnOutput(this, 'SnapshotsTableName', {
