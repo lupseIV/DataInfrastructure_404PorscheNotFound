@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import { TelemetryQueue } from './constructs/telemetry-queue';
 import { TelemetryTables } from './constructs/telemetry-tables';
 
 export interface TelemetryStackProps extends cdk.StackProps {
@@ -14,11 +15,16 @@ export interface TelemetryStackProps extends cdk.StackProps {
  */
 export class TelemetryStack extends cdk.Stack {
   public readonly tables: TelemetryTables;
+  public readonly events: TelemetryQueue;
 
   constructor(scope: Construct, id: string, props: TelemetryStackProps) {
     super(scope, id, props);
 
     this.tables = new TelemetryTables(this, 'Tables', {
+      projectName: props.projectName,
+    });
+
+    this.events = new TelemetryQueue(this, 'Events', {
       projectName: props.projectName,
     });
 
@@ -29,6 +35,14 @@ export class TelemetryStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'LatestTableName', {
       value: this.tables.latestTable.tableName,
       description: 'DynamoDB table with the latest snapshot per device',
+    });
+    new cdk.CfnOutput(this, 'EventsQueueUrl', {
+      value: this.events.queue.queueUrl,
+      description: 'SQS FIFO queue between ingestion and processing',
+    });
+    new cdk.CfnOutput(this, 'EventsDeadLetterQueueUrl', {
+      value: this.events.deadLetterQueue.queueUrl,
+      description: 'SQS FIFO dead-letter queue for events that failed processing',
     });
   }
 }
