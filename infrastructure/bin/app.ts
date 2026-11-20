@@ -7,6 +7,7 @@ const app = new cdk.App();
 const projectName: string = app.node.tryGetContext('projectName') ?? 'fleet-telemetry';
 const region: string = app.node.tryGetContext('region') ?? 'eu-central-1';
 const lambdaReservedConcurrency = Number(app.node.tryGetContext('lambdaReservedConcurrency') ?? 2);
+const allowedOrigin: string = app.node.tryGetContext('allowedOrigin') ?? '*';
 
 new TelemetryStack(app, 'TelemetryStack', {
   stackName: `${projectName}-stack`,
@@ -16,6 +17,7 @@ new TelemetryStack(app, 'TelemetryStack', {
   },
   projectName,
   lambdaReservedConcurrency,
+  allowedOrigin,
 });
 
 cdk.Tags.of(app).add('project', projectName);

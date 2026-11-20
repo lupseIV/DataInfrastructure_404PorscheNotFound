@@ -15,6 +15,8 @@ export interface TelemetryFunctionsProps {
   readonly projectName: string;
   readonly tables: TelemetryTables;
   readonly events: TelemetryQueue;
+  /** Browser origin allowed by CORS; passed to the HTTP-facing Lambdas as ALLOWED_ORIGIN. */
+  readonly allowedOrigin: string;
   /**
    * Reserved concurrency for each function: the maximum number of instances that can run
    * at the same time. Keeps costs bounded. Set to 0 to not reserve any (needed on new
@@ -77,6 +79,7 @@ export class TelemetryFunctions extends Construct {
 
     this.ingestFunction = createFunction('ingest', 'handlers.ingest.handler', cdk.Duration.seconds(10), {
       QUEUE_URL: props.events.queue.queueUrl,
+      ALLOWED_ORIGIN: props.allowedOrigin,
     });
     props.events.queue.grantSendMessages(this.ingestFunction);
 
@@ -91,7 +94,10 @@ export class TelemetryFunctions extends Construct {
       }),
     );
 
-    this.queryFunction = createFunction('query', 'handlers.query.handler', cdk.Duration.seconds(10), tableEnv);
+    this.queryFunction = createFunction('query', 'handlers.query.handler', cdk.Duration.seconds(10), {
+      ...tableEnv,
+      ALLOWED_ORIGIN: props.allowedOrigin,
+    });
     props.tables.snapshotsTable.grantReadData(this.queryFunction);
     props.tables.latestTable.grantReadData(this.queryFunction);
   }

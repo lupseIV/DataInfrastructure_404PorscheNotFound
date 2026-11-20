@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
+import { TelemetryApi } from './constructs/telemetry-api';
 import { PROCESSOR_TIMEOUT, TelemetryFunctions } from './constructs/telemetry-functions';
 import { TelemetryQueue } from './constructs/telemetry-queue';
 import { TelemetryTables } from './constructs/telemetry-tables';
@@ -12,6 +13,11 @@ export interface TelemetryStackProps extends cdk.StackProps {
    * @default 2
    */
   readonly lambdaReservedConcurrency?: number;
+  /**
+   * Browser origin allowed by CORS (the web dashboard / mobile web app).
+   * @default '*'
+   */
+  readonly allowedOrigin?: string;
 }
 
 /**
@@ -23,9 +29,12 @@ export class TelemetryStack extends cdk.Stack {
   public readonly tables: TelemetryTables;
   public readonly events: TelemetryQueue;
   public readonly functions: TelemetryFunctions;
+  public readonly api: TelemetryApi;
 
   constructor(scope: Construct, id: string, props: TelemetryStackProps) {
     super(scope, id, props);
+
+    const allowedOrigin = props.allowedOrigin ?? '*';
 
     this.tables = new TelemetryTables(this, 'Tables', {
       projectName: props.projectName,
@@ -41,6 +50,30 @@ export class TelemetryStack extends cdk.Stack {
       tables: this.tables,
       events: this.events,
       reservedConcurrency: props.lambdaReservedConcurrency,
+      allowedOrigin,
+    });
+
+    this.api = new TelemetryApi(this, 'Api', {
+      projectName: props.projectName,
+      functions: this.functions,
+      allowedOrigin,
+    });
+
+    new cdk.CfnOutput(this, 'ApiBaseUrl', {
+      value: this.api.baseUrl,
+      description: 'Base URL for the apps (VITE_API_BASE_URL); routes start with /api/...',
+    });
+    new cdk.CfnOutput(this, 'IngestionApiKeyId', {
+      value: this.api.ingestionApiKey.keyId,
+      description: 'Id of the x-api-key for POST /api/telemetry (see GetIngestionApiKeyCommand)',
+    });
+    new cdk.CfnOutput(this, 'GetIngestionApiKeyCommand', {
+      value: cdk.Fn.join('', [
+        'aws apigateway get-api-key --region ', this.region,
+        ' --api-key ', this.api.ingestionApiKey.keyId,
+        ' --include-value --query value --output text',
+      ]),
+      description: 'Prints the API key value (VITE_INGESTION_API_KEY)',
     });
 
     new cdk.CfnOutput(this, 'SnapshotsTableName', {
