@@ -288,7 +288,7 @@ class RealClientShapeTests(unittest.TestCase):
     def send(self, client):
         """Runs write_with_alert for an offline decision and returns the TransactItems sent."""
         item = device(presenceState="SUSPECT")
-        decision = rules.next_presence(item, at(270))
+        decision = presence_rules.next_presence(item, at(270))
         sent = {}
 
         def capture(request, **kwargs):
