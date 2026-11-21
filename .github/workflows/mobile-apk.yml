@@ -1,0 +1,124 @@
+name: Mobile APK
+
+# Builds the Flutter phone app (src/mobile-app/tele) into a release APK that sends to the deployed API.
+# - Pull requests: analyze + build without real settings (check only, no key).
+# - main / manual run: builds with the INGESTION_URL repository variable and the
+#   INGESTION_API_KEY secret, and uploads app-release.apk as a workflow artifact.
+# DEVICE_ID is not set: one APK fits every phone, each generates and keeps its own id.
+#
+# The key ends up inside the APK, and artifacts of a public repo can be downloaded by any
+# signed-in GitHub user, so artifacts are kept only for a few days.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/mobile-app/**'
+      - '.github/workflows/mobile-apk.yml'
+  pull_request:
+    paths:
+      - 'src/mobile-app/**'
+      - '.github/workflows/mobile-apk.yml'
+  workflow_dispatch:
+    inputs:
+      send_interval_seconds:
+        description: 'Seconds between telemetry batches'
+        default: '5'
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: src/mobile-app/tele
+  JAVA_VERSION: '17'
+
+jobs:
+  check:
+    name: Analyze and build (check only)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.APP_DIR }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+  build:
+    name: Build release APK
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      INGESTION_URL: ${{ vars.INGESTION_URL }}
+      INGESTION_API_KEY: ${{ secrets.INGESTION_API_KEY }}
+    defaults:
+      run:
+        working-directory: ${{ env.APP_DIR }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check settings
+        run: |
+          missing=0
+          if [ -z "$INGESTION_URL" ]; then
+            echo "::error::Repository variable INGESTION_URL is not set (<ApiBaseUrl>/api/telemetry)."
+            missing=1
+          fi
+          if [ -z "$INGESTION_API_KEY" ]; then
+            echo "::error::Repository secret INGESTION_API_KEY is not set (API Gateway -> API keys -> fleet-telemetry key -> Show)."
+            missing=1
+          fi
+          exit $missing
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Build release APK
+        env:
+          SEND_INTERVAL_SECONDS: ${{ inputs.send_interval_seconds || '5' }}
+        run: |
+          flutter build apk --release \
+            --dart-define="INGESTION_URL=$INGESTION_URL" \
+            --dart-define="INGESTION_API_KEY=$INGESTION_API_KEY" \
+            --dart-define="SEND_INTERVAL_SECONDS=$SEND_INTERVAL_SECONDS"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fleet-telemetry-apk
+          path: ${{ env.APP_DIR }}/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          {
+            echo "## APK built"
+            echo "- Sends to: \`$INGESTION_URL\`"
+            echo "- Device id: generated on each phone at first launch (shown in the app)"
+            echo "- Download **fleet-telemetry-apk** under Artifacts below (kept 3 days)"
+          } >> "$GITHUB_STEP_SUMMARY"
