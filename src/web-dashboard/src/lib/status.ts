@@ -27,6 +27,7 @@ export interface StatusGroupInfo {
   dot: string;
   bar: string;
   chipBorder: string;
+  chipActive: string;
   iconBg: string;
 }
 
@@ -35,32 +36,32 @@ export const STATUS_GROUPS: StatusGroupInfo[] = [
   {
     id: "critical", label: "Critical", shortLabel: "Crit", range: "<20% Battery", icon: "warning",
     color: "#ef4444", text: "text-red-400", dot: "bg-red-500", bar: "bg-red-500",
-    chipBorder: "border-red-500/30", iconBg: "bg-red-500/15 text-red-400",
+    chipBorder: "border-red-500/30", chipActive: "bg-red-500/15 border-red-500 ring-1 ring-red-500/40", iconBg: "bg-red-500/15 text-red-400",
   },
   {
     id: "low", label: "Low", shortLabel: "Low", range: "20–40%", icon: "battery_alert",
     color: "#f59e0b", text: "text-amber-400", dot: "bg-amber-400", bar: "bg-amber-400",
-    chipBorder: "border-amber-500/30", iconBg: "bg-amber-500/15 text-amber-400",
+    chipBorder: "border-amber-500/30", chipActive: "bg-amber-500/15 border-amber-400 ring-1 ring-amber-400/40", iconBg: "bg-amber-500/15 text-amber-400",
   },
   {
     id: "medium", label: "Medium", shortLabel: "Med", range: "40–70%", icon: "battery_4_bar",
     color: "#3b82f6", text: "text-blue-400", dot: "bg-blue-500", bar: "bg-blue-500",
-    chipBorder: "border-blue-500/30", iconBg: "bg-blue-500/15 text-blue-400",
+    chipBorder: "border-blue-500/30", chipActive: "bg-blue-500/15 border-blue-500 ring-1 ring-blue-500/40", iconBg: "bg-blue-500/15 text-blue-400",
   },
   {
     id: "high", label: "High", shortLabel: "High", range: "≥70% Battery", icon: "battery_full",
     color: "#10b981", text: "text-primary", dot: "bg-primary", bar: "bg-primary",
-    chipBorder: "border-primary/30", iconBg: "bg-primary/15 text-primary",
+    chipBorder: "border-primary/30", chipActive: "bg-primary/15 border-primary ring-1 ring-primary/40", iconBg: "bg-primary/15 text-primary",
   },
   {
     id: "charging", label: "Charging", shortLabel: "Chg", range: "Plugged In", icon: "bolt",
     color: "#22d3ee", text: "text-cyan-400", dot: "bg-cyan-400", bar: "bg-cyan-400",
-    chipBorder: "border-cyan-500/30", iconBg: "bg-cyan-500/15 text-cyan-400",
+    chipBorder: "border-cyan-500/30", chipActive: "bg-cyan-500/15 border-cyan-400 ring-1 ring-cyan-400/40", iconBg: "bg-cyan-500/15 text-cyan-400",
   },
   {
     id: "offline", label: "Offline", shortLabel: "Offline", range: ">30s Stale", icon: "wifi_off",
     color: "#64748b", text: "text-slate-400", dot: "bg-slate-500", bar: "bg-slate-600",
-    chipBorder: "border-slate-600/40", iconBg: "bg-slate-700/30 text-slate-400",
+    chipBorder: "border-slate-600/40", chipActive: "bg-slate-500/15 border-slate-400 ring-1 ring-slate-400/40", iconBg: "bg-slate-700/30 text-slate-400",
   },
 ];
 
