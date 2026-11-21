@@ -291,7 +291,8 @@ folder:
 │   ├── infra-deploy-stack.yml     reusable: cdk deploy of one stack
 │   ├── infra-deploy-lambda.yml    reusable: code update of one Lambda
 │   ├── web-dashboard-deploy.yml   Web / Dashboard deploy
-│   └── mobile-apk-build.yml       Mobile / APK build
+│   ├── mobile-apk-build.yml       Mobile / APK build
+│   └── mobile-apk-release.yml     Mobile / APK release   (tag mobile-v*: signed, versioned APK)
 └── actions/                       shared steps (composite actions)
     ├── setup-cdk/                 Node + npm ci in infrastructure/ (cached)
     └── aws-login/                 checks AWS_DEPLOY_ROLE_ARN, then assumes the deploy role (OIDC)
@@ -307,6 +308,7 @@ sidebar lists them grouped.
 | Infra / Deploy stacks and Lambdas | `infra-deploy.yml` | `infrastructure/**`, `src/backend/**` | checks; on `main`: diff per stack + affected Lambdas, then one approval-gated job per stack and per Lambda |
 | Web / Dashboard deploy | `web-dashboard-deploy.yml` | `src/web-dashboard/**` | builds the dashboard; on `main`: uploads to S3 + invalidates CloudFront |
 | Mobile / APK build | `mobile-apk-build.yml` | `src/mobile-app/**` | analyze + debug build; on `main`: release APK as an artifact |
+| Mobile / APK release | `mobile-apk-release.yml` | tag `mobile-v*`, or manual | release APK with the version from the tag, signed with the release key, as an artifact |
 
 Every workflow except the two manual ones also runs on pull requests (checks only, nothing is
 deployed), and all of them can be started by hand from **Actions → (workflow) → Run workflow**.
@@ -417,7 +419,40 @@ Reads `SiteBucketName`, `DistributionId` and `DashboardUrl` from **fleet-telemet
 
 Builds `src/mobile-app/tele`. On `main` it needs the repository variable `INGESTION_URL` and the
 secret `INGESTION_API_KEY`; it does **not** set `DEVICE_ID`, so each phone generates its own.
-Download the APK from the run's **Artifacts** section (kept 3 days).
+Download the APK from the run's **Artifacts** section (kept 3 days). These builds are signed with
+Flutter's debug key and always have version 1.0.0 (1): use them for testing, and the release
+workflow below for the phones.
+
+### Mobile / APK release
+
+A versioned APK signed with the project's own key, so each release installs over the previous one.
+
+```powershell
+git tag mobile-v1.2.0
+git push origin mobile-v1.2.0
+```
+
+1. **Read version** – `1.2.0` from the tag (must be `X.Y.Z`); the versionCode is the workflow's
+   run number, so it always increases. The tagged commit must be on `main`.
+2. **Check settings** – `INGESTION_URL`, `INGESTION_API_KEY` and the four `ANDROID_*` secrets
+   (section 4). A missing one fails the run instead of producing a debug-signed APK.
+3. **Build** – `flutter build apk --release --build-name 1.2.0 --build-number <run number>` with
+   the same `--dart-define`s as Mobile / APK build.
+4. **Sign** – Flutter signs release builds with the debug key (`android/app/build.gradle.kts`),
+   so the workflow re-signs the APK with `zipalign` + `apksigner` from the Android SDK, using the
+   keystore from the secrets. It then checks there is exactly one signer and that it is not the
+   debug key. The app code is not changed.
+5. **Upload** – artifact `fleet-telemetry-<version>` (kept 7 days); the summary shows the version
+   and the signing certificate's SHA-256.
+
+There is deliberately **no GitHub Release**: the APK contains the ingestion API key, and assets of
+a release in this public repo could be downloaded by anyone, forever. Without a tag, run it from
+**Actions → Mobile / APK release → Run workflow** on `main` with a version.
+
+**First install of a release-signed APK:** a phone that has an APK signed with a different key
+(a Mobile / APK build artifact, or `flutter run`) must uninstall the app once; Android refuses to
+update an app with a different signature. After that, every release installs over the previous
+one. The device id is generated again after the uninstall.
 
 ### Infra / Bootstrap (one-time)
 
@@ -481,7 +516,11 @@ the trust conditions.
 | `AWS_DEPLOY_ROLE_ARN` | secret | all deploy jobs | Output `DeployRoleArn` of the bootstrap workflow |
 | `AWS_REGION` | variable (optional) | all AWS workflows | Defaults to `eu-west-1` |
 | `INGESTION_URL` | variable | Mobile / APK build | `<ApiBaseUrl>/api/telemetry` |
-| `INGESTION_API_KEY` | secret | Mobile / APK build | API key value (see 5.4) |
+| `INGESTION_API_KEY` | secret | Mobile / APK build, Mobile / APK release | API key value (see 5.4) |
+| `ANDROID_KEYSTORE_BASE64` | secret | Mobile / APK release | The release keystore (`.jks`) as base64 (see 5.5) |
+| `ANDROID_KEYSTORE_PASSWORD` | secret | Mobile / APK release | Keystore password |
+| `ANDROID_KEY_ALIAS` | secret | Mobile / APK release | Alias of the key in the keystore, e.g. `fleet-telemetry` |
+| `ANDROID_KEY_PASSWORD` | secret | Mobile / APK release | Key password (the same as the keystore password if you used the commands in 5.5) |
 | `AWS_BOOTSTRAP_ACCESS_KEY_ID`, `AWS_BOOTSTRAP_SECRET_ACCESS_KEY` | secret | Infra / Bootstrap | Temporary admin key; delete after bootstrapping |
 
 ### GitHub environments (Settings → Environments)
@@ -566,7 +605,28 @@ AWS console → **API Gateway** (region eu-west-1) → **API keys** → `fleet-t
 → **Show**. Or, with credentials that may call `apigateway:GET`, run the command in the API
 stack's `GetIngestionApiKeyCommand` output.
 
-### 5.5 Watching it run
+### 5.5 Creating the release signing key (once)
+
+Needs a JDK on your machine (`keytool`). Keep `release.jks` and its password somewhere safe
+outside the repo: **if the key is lost, the installed app can never be updated again**, only
+uninstalled and reinstalled.
+
+```powershell
+keytool -genkeypair -v -keystore release.jks -alias fleet-telemetry -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Fleet Telemetry, O=404PorscheNotFound"
+```
+
+`keytool` asks for a password; with a PKCS12 keystore (the default) the key uses the same one.
+Copy the keystore as base64 to the clipboard:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$PWD\release.jks")) | Set-Clipboard
+```
+
+Then in **Settings → Secrets and variables → Actions** add `ANDROID_KEYSTORE_BASE64` (paste),
+`ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_PASSWORD` (the password), and `ANDROID_KEY_ALIAS`
+(`fleet-telemetry`). Never commit `release.jks`.
+
+### 5.6 Watching it run
 
 | What | Where |
 |---|---|
