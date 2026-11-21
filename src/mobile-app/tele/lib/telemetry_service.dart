@@ -9,6 +9,7 @@ import 'package:sensors_plus/sensors_plus.dart';
 
 import 'config.dart';
 import 'geo.dart';
+import 'signal.dart';
 import 'telemetry_event.dart';
 
 enum SendStatus { idle, sending, ok, retrying, rejected, unauthorized }
@@ -27,6 +28,7 @@ class _Outbound {
 /// last-call (D2) events jump to the front of the queue. 400/401 are not retried.
 class TelemetryService extends ChangeNotifier with WidgetsBindingObserver {
   final _battery = Battery();
+  final _signal = SignalReader();
   final _client = http.Client();
 
   StreamSubscription<AccelerometerEvent>? _accelSub;
@@ -44,6 +46,7 @@ class TelemetryService extends ChangeNotifier with WidgetsBindingObserver {
   double? lastBatteryRatio;
   bool? lastCharging;
   GeoSample? lastGeo;
+  SignalSample? lastSignal;
 
   // Device context sent with D1/D2 events.
   bool _powerSave = false;
@@ -52,6 +55,11 @@ class TelemetryService extends ChangeNotifier with WidgetsBindingObserver {
   // D1/D2 re-arm flags (hysteresis): true = allowed to fire.
   bool _lowArmed = true;
   bool _lastCallArmed = true;
+
+  // E1/E2 re-arm flags + rolling signal window (last signalDropWindowSeconds).
+  bool _degradedArmed = true;
+  bool _connLastCallArmed = true;
+  final List<SignalSample> _signalWindow = [];
 
   // Status (shown in UI).
   bool running = false;
@@ -183,6 +191,13 @@ class TelemetryService extends ChangeNotifier with WidgetsBindingObserver {
       events.add(TelemetryEvent.motionHeading(id, geo.headingValue(), ts));
     }
 
+    // Contract A: raw radio signal (Android only; null on iOS and when no radio).
+    final sig = await _signal.read();
+    if (sig != null) {
+      lastSignal = sig;
+      events.add(TelemetryEvent.signalStrength(id, sig.signalValue(), ts));
+    }
+
     if (events.isNotEmpty) {
       _push(_Outbound(
         AppConfig.ingestionUrl,
@@ -193,6 +208,11 @@ class TelemetryService extends ChangeNotifier with WidgetsBindingObserver {
     // Contracts D1/D2: fire battery status / last-call events on threshold crossings.
     if (lastBatteryRatio != null && lastCharging != null) {
       _evaluateBattery(lastBatteryRatio!, lastCharging!, ts);
+    }
+
+    // Contracts E1/E2: connectivity degraded / last-call on the signal window.
+    if (sig != null && lastBatteryRatio != null) {
+      _evaluateConnectivity(sig, ts);
     }
 
     notifyListeners();
@@ -252,6 +272,97 @@ class TelemetryService extends ChangeNotifier with WidgetsBindingObserver {
     } else if (geo == null) {
       // D1 with no current fix: supply lastKnownLocation (null if never seen).
       body['lastKnownLocation'] = null;
+    }
+    return body;
+  }
+
+  /// Contracts E1/E2 on a rolling window of the last [signalDropWindowSeconds]:
+  /// E1 (degraded) when the level drops >= [signalDropBars] bars or [signalDropDbm]
+  /// dBm vs the window's best reading; E2 (last-call) when the level hits 0 or the
+  /// dBm falls to/below [signalLostDbm]. Each fires once and re-arms on recovery.
+  /// Raw values only — the phone compares to constants to decide *when* to send.
+  void _evaluateConnectivity(SignalSample sig, String ts) {
+    final now = sig.capturedAt;
+    _signalWindow.add(sig);
+    final cutoff = now.subtract(
+      const Duration(seconds: AppConfig.signalDropWindowSeconds),
+    );
+    _signalWindow.removeWhere((s) => s.capturedAt.isBefore(cutoff));
+
+    // "Previous" = the best reading still inside the window (highest bars / dBm).
+    var prevLevel = sig.level;
+    double? prevDbm = sig.dbm;
+    var oldest = now;
+    for (final s in _signalWindow) {
+      if (s.level > prevLevel) prevLevel = s.level;
+      if (s.dbm != null && (prevDbm == null || s.dbm! > prevDbm)) prevDbm = s.dbm;
+      if (s.capturedAt.isBefore(oldest)) oldest = s.capturedAt;
+    }
+    final barsDrop = prevLevel - sig.level;
+    final dbmDrop = (prevDbm != null && sig.dbm != null) ? prevDbm - sig.dbm! : 0.0;
+    final lostByDbm = sig.dbm != null && sig.dbm! <= AppConfig.signalLostDbm;
+
+    // Re-arm first (recovery), so we never fire and re-arm on the same tick.
+    if (sig.level >= 1 && !lostByDbm) _connLastCallArmed = true;
+    if (barsDrop < AppConfig.signalDropBars && dbmDrop < AppConfig.signalDropDbm) {
+      _degradedArmed = true;
+    }
+
+    final geo = lastGeo; // required by both contracts (location / lastKnownLocation)
+    if (geo == null) return; // can't satisfy the contract without a fix yet
+
+    if (_connLastCallArmed && (sig.level == 0 || lostByDbm)) {
+      _connLastCallArmed = false;
+      _degradedArmed = false; // last-call supersedes degraded on this descent
+      _push(
+        _Outbound(AppConfig.connectivityLastCallUrl,
+            _connectivityBody(sig, prevLevel, ts, geo, lastCall: true)),
+        front: true, // jump the queue: best last-known state before the link dies
+      );
+      return;
+    }
+
+    if (_degradedArmed &&
+        (barsDrop >= AppConfig.signalDropBars || dbmDrop >= AppConfig.signalDropDbm)) {
+      _degradedArmed = false;
+      final windowSeconds = now
+          .difference(oldest)
+          .inSeconds
+          .clamp(1, AppConfig.signalDropWindowSeconds)
+          .toInt();
+      _push(_Outbound(
+        AppConfig.connectivityDegradedUrl,
+        _connectivityBody(sig, prevLevel, ts, geo,
+            lastCall: false, windowSeconds: windowSeconds),
+      ));
+    }
+  }
+
+  Map<String, Object?> _connectivityBody(
+    SignalSample sig,
+    int prevLevel,
+    String ts,
+    GeoSample geo, {
+    required bool lastCall,
+    int? windowSeconds,
+  }) {
+    final body = <String, Object?>{
+      'deviceId': deviceId,
+      'timestamp': ts,
+      'signalLevel': sig.level,
+      'previousSignalLevel': prevLevel,
+      if (sig.dbm != null) 'signalDbm': sig.dbm,
+      'networkType': sig.networkType,
+      'pendingEventCount': _queue.length,
+      'batteryLevel': lastBatteryRatio ?? 0.0,
+      'location': geo.locationWithCapturedAt(),
+      'heading': geo.headingValue(),
+      'schemaVersion': TelemetryEvent.schemaVersion,
+    };
+    if (lastCall) {
+      body['lastKnownLocation'] = geo.locationWithCapturedAt();
+    } else if (windowSeconds != null) {
+      body['windowSeconds'] = windowSeconds;
     }
     return body;
   }

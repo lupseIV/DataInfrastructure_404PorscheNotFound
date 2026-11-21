@@ -24,7 +24,7 @@ class AppConfig {
 
   /// How often a batch of readings is captured.
   static const sendIntervalSeconds =
-      int.fromEnvironment('SEND_INTERVAL_SECONDS', defaultValue: 3);
+      int.fromEnvironment('SEND_INTERVAL_SECONDS', defaultValue: 5);
 
   /// Max events per POST when flushing a backlog (offline queue).
   static const maxEventsPerRequest = 60;
@@ -47,6 +47,19 @@ class AppConfig {
   /// threshold again (prevents re-sending on every tick while hovering).
   static const rearmMargin = 0.05;
 
+  // --- Connectivity thresholds (Contracts E1/E2) -----------------------------
+  /// E1 fires when bars drop by at least this much inside the window.
+  static const signalDropBars = 2;
+
+  /// E1 fires when dBm drops by at least this much inside the window.
+  static const signalDropDbm = 15.0;
+
+  /// Rolling window over which an E1 drop is measured (seconds).
+  static const signalDropWindowSeconds = 60;
+
+  /// E2 (connectivity last-call) fires at or below this dBm (or level == 0).
+  static const signalLostDbm = -110.0;
+
   /// Base URL (stage root) derived from [ingestionUrl] by removing the
   /// `/api/telemetry` suffix, so event endpoints share the same stage.
   static String get _apiBase {
@@ -61,4 +74,12 @@ class AppConfig {
 
   /// POST /api/events/battery-last-call (Contract D2).
   static String get batteryLastCallUrl => '$_apiBase/api/events/battery-last-call';
+
+  /// POST /api/events/connectivity-degraded (Contract E1).
+  static String get connectivityDegradedUrl =>
+      '$_apiBase/api/events/connectivity-degraded';
+
+  /// POST /api/events/connectivity-last-call (Contract E2).
+  static String get connectivityLastCallUrl =>
+      '$_apiBase/api/events/connectivity-last-call';
 }
