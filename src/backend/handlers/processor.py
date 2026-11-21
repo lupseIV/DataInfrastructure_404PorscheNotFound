@@ -1,11 +1,12 @@
-"""SQS FIFO -> DynamoDB (Contract B)."""
+"""SQS FIFO -> DynamoDB (Contract B), plus the liveness fields of Contract F."""
 import json
 import os
 import time
+from datetime import datetime, timezone
 
 import boto3
 
-from .event_common import to_dynamo
+from .event_common import _is_condition_failed, to_dynamo
 from .rules import build_snapshot, normalize_timestamp
 from .validation import normalize_events, validate_events
 
@@ -39,9 +40,60 @@ def put_latest(latest_table, snap):
     )
 
 
-def process_events(raw_events):
+def _iso_from_millis(millis):
+    return datetime.fromtimestamp(int(millis) / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def received_at_of(record):
+    """When the server received the batch: the SQS SentTimestamp (set when ingest queued it).
+
+    Falls back to now when the attribute is missing (e.g. a hand-made test event).
+    """
+    sent = (record.get("attributes") or {}).get("SentTimestamp")
+    try:
+        return _iso_from_millis(sent)
+    except (TypeError, ValueError):
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def update_liveness(latest_table, device_id, received_at, newest_event_ts):
+    """Contract F liveness on the latest item; both fields only ever move forward.
+
+    - lastSeenAt (server receipt time) + presenceState ONLINE: skipped when an event Lambda
+      already recorded a later contact, so a delayed batch never makes a device look older.
+    - lastEventTimestamp (device time of the newest data): skipped for older replayed data.
+    Fixed-width ISO UTC strings compare chronologically.
+    """
+    updates = (
+        ("SET #seen = :seen, #presence = :online",
+         {"#seen": "lastSeenAt", "#presence": "presenceState"},
+         {":seen": received_at, ":online": "ONLINE"},
+         "attribute_not_exists(#seen) OR #seen < :seen"),
+        ("SET #last = :ts",
+         {"#last": "lastEventTimestamp"},
+         {":ts": newest_event_ts},
+         "attribute_not_exists(#last) OR #last < :ts"),
+    )
+    for expression, names, values, condition in updates:
+        try:
+            latest_table.update_item(
+                Key={"deviceId": device_id},
+                UpdateExpression=expression,
+                ConditionExpression=condition,
+                ExpressionAttributeNames=names,
+                ExpressionAttributeValues=values,
+            )
+        except Exception as ex:
+            if not _is_condition_failed(ex):
+                raise
+
+
+def process_events(raw_events, received_at=None):
+    """received_at: ISO UTC receipt time of the batch (see received_at_of)."""
     validate_events(raw_events)  # poison messages raise -> retry -> DLQ
     snapshots_table, latest_table = _tables()
+    if received_at is None:
+        received_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     by_device = {}
     for e in raw_events:
@@ -51,6 +103,8 @@ def process_events(raw_events):
         prev = latest_table.get_item(Key={"deviceId": device_id}).get("Item")
         if prev is not None and "batteryLevel" not in prev:
             prev = None  # item created by an event Lambda: no snapshot has been processed yet
+        # Any batch is contact from the device, even one whose data is older than what is stored.
+        update_liveness(latest_table, device_id, received_at, max(by_ts))
         for ts in sorted(by_ts):  # oldest first; fixed-width UTC strings sort chronologically
             if prev and ts <= prev["timestamp"]:
                 # Already processed (SQS retry) or older than the latest state: nothing to do.
@@ -70,7 +124,7 @@ def handler(event, context):
     records = event.get("Records", [])
     for idx, record in enumerate(records):
         try:
-            process_events(normalize_events(json.loads(record["body"])))
+            process_events(normalize_events(json.loads(record["body"])), received_at_of(record))
         except Exception as ex:
             print(f"Failed message {record.get('messageId')}: {ex!r}")
             # Report this and every later message so SQS retries them in order.
