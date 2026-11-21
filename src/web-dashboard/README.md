@@ -4,7 +4,7 @@ Fleet health dashboard (React + Vite + TypeScript + Tailwind). It polls the quer
 (Contract C) every 5 seconds and shows:
 
 - **Status cards**: devices per battery group (Critical < 20 %, Low 20–40 %, Medium 40–70 %,
-  High ≥ 70 %, Charging, Offline = no data for 30 s). Click a card to filter the list and the map.
+  High ≥ 70 %, Charging, Offline). Click a card to filter the list and the map.
 - **Device list** (left): search, battery bar, charging and offline state. Click a device to select it.
 - **Map**: every device as a marker colored by its battery group. Click a marker to open its details.
 - **Detail panel** (right): the backend's alert and reason, battery %, drain rate, time remaining,
@@ -68,11 +68,21 @@ must allow `http://localhost:5173`, otherwise the browser blocks the requests.
 
 No API key is needed; only `POST /api/telemetry` (the phone) requires `x-api-key`.
 
-## Map positions
+## Location, heading and presence (Contract C additions)
 
-Contract C has no coordinates yet, so each device is placed at a fixed **approximate**
-position around `mapCenter` (derived from its ID), and the legend says so. If the API adds
-`latitude` and `longitude` to the device objects, the map uses them automatically.
+All new fields are optional; the dashboard works with or without them.
+
+- **`location: { lat, lon, accuracyM, capturedAt }`**: the marker is drawn at the GPS position,
+  and the selected device shows an accuracy circle, its coordinates, the fix age and an
+  "Open in Google Maps" link. While `location` is missing or `null`, the device is placed at a
+  fixed **approximate** position around `mapCenter` (derived from its ID) and the legend counts it.
+- **`heading: { degrees, speedMps }`**: devices moving faster than 0.5 m/s get a direction arrow;
+  the detail panel shows speed (km/h) and heading.
+- **`travelStatus`**: shown as the motion state (falls back to `activityState`).
+- **`presenceState`**: `OFFLINE` puts the device in the Offline group; `SUSPECT` (silent for over a
+  minute) shows a warning icon and a dashed amber marker border. Without `presenceState`, a device
+  counts as Offline after 30 s without data (`staleAfterMs`).
+- **`lastSeenAt`**: used for "last seen" times (server clock), falling back to `lastUpdated`.
 
 ## Code layout
 

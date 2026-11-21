@@ -8,15 +8,20 @@
 //   medium    fleet-phone-05, fleet-phone-08, fleet-phone-10 (WARNING: idle drain)
 //   high      fleet-phone-01, fleet-phone-04, fleet-phone-11
 //   charging  fleet-phone-07
-//   offline   fleet-phone-12 (no data for 5 minutes)
-// No coordinates are sent, like the real backend, so the map uses approximate positions.
+//   offline   fleet-phone-12 (no data for 5 minutes, server presence OFFLINE)
+// fleet-phone-09 has been silent for 75 s, so the server marks it SUSPECT.
+// fleet-phone-04 has no GPS fix yet (location: null), so the map places it approximately.
+// Walking and in-vehicle devices move along their heading, so the map is live.
 
+import { config } from "../config";
+import { approximatePosition, offsetPosition } from "../lib/location";
 import type {
   ActivityState,
   AlertStatus,
   Device,
   DeviceTelemetry,
   HealthSnapshot,
+  PresenceState,
   TelemetryRecord,
 } from "../types";
 
@@ -27,26 +32,66 @@ interface MockProfile {
   isCharging: boolean;
   activityState: ActivityState;
   drainRatePerHour: number;
+  /** Direction of travel in degrees (0 = north), for moving devices. */
+  headingDeg?: number;
+  /** No GPS fix yet: location is null. */
+  noFix?: boolean;
 }
 
 const PROFILES: MockProfile[] = [
-  { deviceId: "fleet-phone-01", secondsSinceUpdate: 3, batteryLevel: 78.5, isCharging: false, activityState: "walking", drainRatePerHour: 9.4 },
-  { deviceId: "fleet-phone-02", secondsSinceUpdate: 4, batteryLevel: 34.0, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 14.8 },
+  { deviceId: "fleet-phone-01", secondsSinceUpdate: 3, batteryLevel: 78.5, isCharging: false, activityState: "walking", drainRatePerHour: 9.4, headingDeg: 274 },
+  { deviceId: "fleet-phone-02", secondsSinceUpdate: 4, batteryLevel: 34.0, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 14.8, headingDeg: 95 },
   { deviceId: "fleet-phone-03", secondsSinceUpdate: 2, batteryLevel: 16.5, isCharging: false, activityState: "stationary", drainRatePerHour: 21.3 },
-  { deviceId: "fleet-phone-04", secondsSinceUpdate: 5, batteryLevel: 92.0, isCharging: false, activityState: "stationary", drainRatePerHour: 4.1 },
-  { deviceId: "fleet-phone-05", secondsSinceUpdate: 1, batteryLevel: 58.0, isCharging: false, activityState: "walking", drainRatePerHour: 8.2 },
-  { deviceId: "fleet-phone-06", secondsSinceUpdate: 6, batteryLevel: 14.2, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 11.0 },
+  { deviceId: "fleet-phone-04", secondsSinceUpdate: 5, batteryLevel: 92.0, isCharging: false, activityState: "stationary", drainRatePerHour: 4.1, noFix: true },
+  { deviceId: "fleet-phone-05", secondsSinceUpdate: 1, batteryLevel: 58.0, isCharging: false, activityState: "walking", drainRatePerHour: 8.2, headingDeg: 20 },
+  { deviceId: "fleet-phone-06", secondsSinceUpdate: 6, batteryLevel: 14.2, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 11.0, headingDeg: 200 },
   { deviceId: "fleet-phone-07", secondsSinceUpdate: 2, batteryLevel: 88.0, isCharging: true, activityState: "stationary", drainRatePerHour: 0 },
-  { deviceId: "fleet-phone-08", secondsSinceUpdate: 7, batteryLevel: 64.5, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 7.5 },
-  { deviceId: "fleet-phone-09", secondsSinceUpdate: 3, batteryLevel: 29.5, isCharging: false, activityState: "walking", drainRatePerHour: 10.2 },
+  { deviceId: "fleet-phone-08", secondsSinceUpdate: 7, batteryLevel: 64.5, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 7.5, headingDeg: 320 },
+  { deviceId: "fleet-phone-09", secondsSinceUpdate: 75, batteryLevel: 29.5, isCharging: false, activityState: "walking", drainRatePerHour: 10.2, headingDeg: 150 },
   { deviceId: "fleet-phone-10", secondsSinceUpdate: 4, batteryLevel: 48.0, isCharging: false, activityState: "stationary", drainRatePerHour: 13.4 },
-  { deviceId: "fleet-phone-11", secondsSinceUpdate: 8, batteryLevel: 74.0, isCharging: false, activityState: "walking", drainRatePerHour: 6.8 },
+  { deviceId: "fleet-phone-11", secondsSinceUpdate: 8, batteryLevel: 74.0, isCharging: false, activityState: "walking", drainRatePerHour: 6.8, headingDeg: 60 },
   { deviceId: "fleet-phone-12", secondsSinceUpdate: 300, batteryLevel: 42.0, isCharging: false, activityState: "stationary", drainRatePerHour: 5.0 },
 ];
 
 const SAMPLE_INTERVAL_SECONDS = 10; // the phone sends a batch every 10 s
 const CHARGE_RATE_PER_HOUR = 30; // how fast a charging mock device gains battery
 const MAX_RECORDS = 500;
+const SPEED_MPS: Record<ActivityState, number> = { stationary: 0, walking: 1.4, in_vehicle: 11 };
+const ACCURACY_M: Record<ActivityState, number> = { stationary: 4, walking: 6.5, in_vehicle: 9 };
+// Moving devices travel along their heading and start over every 10 minutes.
+const ROUTE_LOOP_SECONDS = 600;
+
+// Contract F defaults: SUSPECT after 60 s of silence, OFFLINE after 240 s.
+function presenceOf(p: MockProfile): PresenceState {
+  if (p.secondsSinceUpdate >= 240) return "OFFLINE";
+  if (p.secondsSinceUpdate >= 60) return "SUSPECT";
+  return "ONLINE";
+}
+
+/** Location, heading, travel status and presence fields added to Contract C. */
+function liveFields(p: MockProfile, lastUpdated: string, now: number): Partial<Device> {
+  const fixTime = now - p.secondsSinceUpdate * 1000;
+  const speedMps = p.headingDeg === undefined ? 0 : SPEED_MPS[p.activityState];
+  const [baseLat, baseLng] = approximatePosition(p.deviceId, config.mapCenter);
+  // Silent devices stay where they were last seen.
+  const travelled = presenceOf(p) === "ONLINE" ? speedMps * ((fixTime / 1000) % ROUTE_LOOP_SECONDS) : 0;
+  const [lat, lon] = offsetPosition(baseLat, baseLng, travelled, p.headingDeg ?? 0);
+
+  return {
+    location: p.noFix
+      ? null
+      : {
+          lat,
+          lon,
+          accuracyM: presenceOf(p) === "OFFLINE" ? 25 : ACCURACY_M[p.activityState],
+          capturedAt: lastUpdated,
+        },
+    heading: p.headingDeg === undefined ? null : { degrees: p.headingDeg, speedMps },
+    travelStatus: p.activityState,
+    presenceState: presenceOf(p),
+    lastSeenAt: new Date(fixTime + 1000).toISOString(), // server receipt, a second later
+  };
+}
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -108,7 +153,7 @@ export function getMockDevices(): Device[] {
   const now = Date.now();
   return PROFILES.map((p) => {
     const { timestamp, ...health } = snapshotAt(p, 0, now);
-    return { deviceId: p.deviceId, lastUpdated: timestamp, ...health };
+    return { deviceId: p.deviceId, lastUpdated: timestamp, ...health, ...liveFields(p, timestamp, now) };
   });
 }
 

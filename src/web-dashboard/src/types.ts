@@ -15,14 +15,35 @@ export interface HealthSnapshot {
   alertReason: string | null;
 }
 
+/** Cloud-derived movement, from GPS speed plus the acceleration classification. */
+export type TravelStatus = ActivityState | "unknown";
+
+/** Server-side liveness (Contract F): SUSPECT after 60 s of silence, OFFLINE after the grace period. */
+export type PresenceState = "ONLINE" | "SUSPECT" | "OFFLINE";
+
+export interface DeviceLocation {
+  lat: number;
+  lon: number;
+  accuracyM: number; // meters
+  capturedAt: string; // ISO-8601 UTC, device capture time of the fix
+}
+
+export interface DeviceHeading {
+  degrees: number; // 0-360, 0 = north
+  speedMps: number; // meters per second
+}
+
 /** One item of GET /api/devices: the latest state of a device. */
 export interface Device extends HealthSnapshot {
   deviceId: string;
   lastUpdated: string; // ISO-8601 UTC
-  // Not in Contract C yet. If the backend adds them, the map uses the real
-  // position; otherwise it places the device approximately (see lib/location.ts).
-  latitude?: number | null;
-  longitude?: number | null;
+  // Added to Contract C with the location update. All optional: the backend may
+  // not send them yet, and every field has a fallback in the UI.
+  location?: DeviceLocation | null; // null until the first GPS fix
+  heading?: DeviceHeading | null;
+  travelStatus?: TravelStatus | null;
+  presenceState?: PresenceState | null;
+  lastSeenAt?: string | null; // server receipt time of the last event
 }
 
 /** One record of GET /api/devices/{deviceId}/telemetry. */

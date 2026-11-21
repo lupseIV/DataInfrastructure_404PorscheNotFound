@@ -2,13 +2,17 @@ import type { ReactNode } from "react";
 import {
   formatActivity,
   formatAgo,
+  formatCoordinates,
   formatDrainRate,
   formatDuration,
+  formatHeading,
   formatPercent,
+  formatSpeed,
   formatUtc,
   parseTime,
 } from "../lib/format";
-import { alertStyle, groupInfo, type StatusGroup } from "../lib/status";
+import { hasGpsFix } from "../lib/location";
+import { alertStyle, groupInfo, isSuspect, lastSeenOf, type StatusGroup } from "../lib/status";
 import type { Device, TelemetryRecord } from "../types";
 import { BatteryChart } from "./BatteryChart";
 import { HistoryTable } from "./HistoryTable";
@@ -37,7 +41,15 @@ export function DeviceDetailPanel({
   const g = groupInfo(group);
   const alert = alertStyle(device.alertStatus);
   const offline = group === "offline";
-  const lastSeen = formatAgo(parseTime(device.lastUpdated), now);
+  const suspect = isSuspect(device);
+  const lastSeen = formatAgo(parseTime(lastSeenOf(device)), now);
+  const loc = hasGpsFix(device) ? device.location! : null;
+  const heading = device.heading ?? null;
+  const connection = offline
+    ? { text: "Offline", cls: "text-slate-400" }
+    : suspect
+      ? { text: "No data for >1 min", cls: "text-amber-400" }
+      : { text: "Online", cls: "text-primary" };
   const level = Math.min(100, Math.max(0, device.batteryLevel ?? 0));
   const drain = device.drainRatePerHour ?? 0;
   const drainColor = device.isCharging
@@ -72,10 +84,10 @@ export function DeviceDetailPanel({
                 {g.label}
               </span>
             </div>
-            <span
-              className={`text-[10px] font-mono leading-none block mt-1 ${offline ? "text-slate-400" : "text-primary"}`}
-            >
-              {offline ? `Offline · last seen ${lastSeen}` : `Online · last ping ${lastSeen}`}
+            <span className={`text-[10px] font-mono leading-none block mt-1 ${connection.cls}`}>
+              {offline || suspect
+                ? `${connection.text} · last seen ${lastSeen}`
+                : `Online · last ping ${lastSeen}`}
             </span>
           </div>
         </div>
@@ -128,10 +140,39 @@ export function DeviceDetailPanel({
         {/* Activity & status */}
         <Card icon="sensors" iconClass="text-amber-400" title="Activity & Status">
           <div className="space-y-0 text-xs font-mono">
-            <Row label="Motion state" value={formatActivity(device.activityState)} />
-            <Row label="Connection" value={offline ? "Offline (>30s)" : "Online"} valueClass={offline ? "text-slate-400" : "text-primary"} />
-            <Row label="Last updated" value={formatUtc(device.lastUpdated)} last />
+            <Row label="Motion state" value={formatActivity(device.travelStatus ?? device.activityState)} />
+            {heading && (
+              <Row label="Speed / heading" value={`${formatSpeed(heading.speedMps)} · ${formatHeading(heading.degrees)}`} />
+            )}
+            <Row label="Connection" value={connection.text} valueClass={connection.cls} />
+            <Row label="Last seen" value={formatUtc(lastSeenOf(device))} last />
           </div>
+        </Card>
+
+        {/* Location */}
+        <Card icon="location_on" iconClass="text-blue-400" title="Location" badge={loc ? "GPS" : "Approximate"} badgeClass={loc ? "text-primary" : "text-amber-400"}>
+          {loc ? (
+            <>
+              <div className="space-y-0 text-xs font-mono">
+                <Row label="Coordinates" value={formatCoordinates(loc.lat, loc.lon)} />
+                <Row label="Accuracy" value={typeof loc.accuracyM === "number" ? `±${loc.accuracyM.toFixed(1)} m` : "—"} />
+                <Row label="Fix taken" value={formatAgo(parseTime(loc.capturedAt), now)} last />
+              </div>
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}`}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center justify-center gap-1.5 w-full py-1.5 rounded-md border border-line bg-surface-container hover:bg-surface-high text-[11px] font-mono text-slate-200"
+              >
+                <Icon name="directions" className="text-[15px] text-blue-400" />
+                Open in Google Maps
+              </a>
+            </>
+          ) : (
+            <p className="text-[11px] text-slate-400">
+              No GPS fix from this device yet. Its position on the map is approximate.
+            </p>
+          )}
         </Card>
 
         {/* History */}

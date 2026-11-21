@@ -1,5 +1,5 @@
 import { formatPercent } from "../lib/format";
-import { groupInfo, type StatusGroup } from "../lib/status";
+import { groupInfo, isSuspect, type StatusGroup } from "../lib/status";
 import type { Device } from "../types";
 import { Icon } from "./Icon";
 
@@ -160,6 +160,11 @@ export function DeviceSidebar({
                     >
                       {device.deviceId}
                     </span>
+                    {isSuspect(device) && (
+                      <span title="No data for over a minute" className="flex shrink-0 text-amber-400">
+                        <Icon name="sensors_off" className="text-[13px]" />
+                      </span>
+                    )}
                   </div>
                   {offline ? (
                     <span className="font-mono text-[11px] font-bold text-slate-400">Offline</span>
