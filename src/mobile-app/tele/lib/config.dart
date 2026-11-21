@@ -24,7 +24,7 @@ class AppConfig {
 
   /// How often a batch of readings is captured.
   static const sendIntervalSeconds =
-      int.fromEnvironment('SEND_INTERVAL_SECONDS', defaultValue: 3);
+      int.fromEnvironment('SEND_INTERVAL_SECONDS', defaultValue: 5);
 
   /// Max events per POST when flushing a backlog (offline queue).
   static const maxEventsPerRequest = 60;
