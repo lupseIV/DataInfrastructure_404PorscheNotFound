@@ -7,7 +7,8 @@ const app = new cdk.App();
 const projectName: string = app.node.tryGetContext('projectName') ?? 'fleet-telemetry';
 const region: string = app.node.tryGetContext('region') ?? 'eu-central-1';
 const lambdaReservedConcurrency = Number(app.node.tryGetContext('lambdaReservedConcurrency') ?? 2);
-const allowedOrigin: string = app.node.tryGetContext('allowedOrigin') ?? '*';
+// Unset = the CloudFront URL of the web apps. Override with -c allowedOrigin=http://localhost:5173
+const allowedOrigin: string | undefined = app.node.tryGetContext('allowedOrigin');
 
 new TelemetryStack(app, 'TelemetryStack', {
   stackName: `${projectName}-stack`,

@@ -7,7 +7,6 @@
   "context": {
     "projectName": "fleet-telemetry",
     "region": "eu-central-1",
-    "lambdaReservedConcurrency": 2,
-    "allowedOrigin": "*"
+    "lambdaReservedConcurrency": 2
   }
 }

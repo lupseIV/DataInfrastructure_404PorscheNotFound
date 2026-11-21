@@ -4,6 +4,7 @@ import { TelemetryApi } from './constructs/telemetry-api';
 import { PROCESSOR_TIMEOUT, TelemetryFunctions } from './constructs/telemetry-functions';
 import { TelemetryQueue } from './constructs/telemetry-queue';
 import { TelemetryTables } from './constructs/telemetry-tables';
+import { WebHosting } from './constructs/web-hosting';
 
 export interface TelemetryStackProps extends cdk.StackProps {
   /** Prefix used when naming resources, e.g. "fleet-telemetry". */
@@ -14,8 +15,9 @@ export interface TelemetryStackProps extends cdk.StackProps {
    */
   readonly lambdaReservedConcurrency?: number;
   /**
-   * Browser origin allowed by CORS (the web dashboard / mobile web app).
-   * @default '*'
+   * Browser origin allowed by CORS. Override for local development,
+   * e.g. "http://localhost:5173" or "*".
+   * @default - the CloudFront URL that hosts the dashboard and the mobile app
    */
   readonly allowedOrigin?: string;
 }
@@ -30,11 +32,16 @@ export class TelemetryStack extends cdk.Stack {
   public readonly events: TelemetryQueue;
   public readonly functions: TelemetryFunctions;
   public readonly api: TelemetryApi;
+  public readonly web: WebHosting;
 
   constructor(scope: Construct, id: string, props: TelemetryStackProps) {
     super(scope, id, props);
 
-    const allowedOrigin = props.allowedOrigin ?? '*';
+    this.web = new WebHosting(this, 'Web', {
+      projectName: props.projectName,
+    });
+
+    const allowedOrigin = props.allowedOrigin ?? this.web.origin;
 
     this.tables = new TelemetryTables(this, 'Tables', {
       projectName: props.projectName,
@@ -59,6 +66,26 @@ export class TelemetryStack extends cdk.Stack {
       allowedOrigin,
     });
 
+    new cdk.CfnOutput(this, 'DashboardUrl', {
+      value: `${this.web.origin}/dashboard/`,
+      description: 'Web dashboard',
+    });
+    new cdk.CfnOutput(this, 'MobileAppUrl', {
+      value: `${this.web.origin}/mobile/`,
+      description: 'Mobile web app (open on the phone)',
+    });
+    new cdk.CfnOutput(this, 'SiteBucketName', {
+      value: this.web.bucket.bucketName,
+      description: 'Upload builds to s3://<bucket>/dashboard/ and s3://<bucket>/mobile/',
+    });
+    new cdk.CfnOutput(this, 'DistributionId', {
+      value: this.web.distribution.distributionId,
+      description: 'CloudFront distribution id (for cache invalidation after uploads)',
+    });
+    new cdk.CfnOutput(this, 'AllowedOrigin', {
+      value: allowedOrigin,
+      description: 'CORS origin the API accepts',
+    });
     new cdk.CfnOutput(this, 'ApiBaseUrl', {
       value: this.api.baseUrl,
       description: 'Base URL for the apps (VITE_API_BASE_URL); routes start with /api/...',
