@@ -108,7 +108,7 @@ sequenceDiagram
 | **SQS FIFO** (`fleet-telemetry-events.fifo`) | Buffer between ingestion and processing | Ordered per device (`MessageGroupId = deviceId`), content-based dedup (5 min), visibility 180 s |
 | **DLQ** (`fleet-telemetry-events-dlq.fifo`) | Messages that failed 3 times | Kept 14 days; alarm `fleet-telemetry-events-dlq-not-empty` |
 | **λ processor** | Builds health snapshots (drain rate etc.) | SQS trigger: batch 10, max 2 concurrent, partial batch failures |
-| **λ query** | `GET /api/devices`, `/api/devices/{deviceId}/telemetry`, `/api/devices/{deviceId}/alerts` | Read-only on snapshots, latest and alerts |
+| **λ query** | `GET /api/devices`, `/api/devices/{deviceId}/telemetry`, `/api/devices/{deviceId}/alerts`, `/api/devices/{deviceId}/path` | Read-only on snapshots, latest and alerts |
 | **λ battery** | `POST /api/events/battery-low`, `/battery-last-call` | Thresholds 0.20 / 0.10 |
 | **λ connectivity** | `POST /api/events/connectivity-degraded`, `/connectivity-last-call` | Drop of 2 bars in 60 s, lost below −110 dBm |
 | **λ presence** | Every minute (EventBridge): marks silent devices SUSPECT / OFFLINE | Suspect after 60 s, offline after 240 s more; no retries |

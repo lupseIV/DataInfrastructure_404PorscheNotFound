@@ -205,5 +205,122 @@ class DeviceListTests(QueryTestCase):
         self.assertNotIn("lastCallType", body["records"][0])
 
 
+def path_snap(ts, lat="46.770", acc="5"):
+    return {
+        "deviceId": "d1", "timestamp": ts, "travelStatus": "walking",
+        "location": {"lat": Decimal(lat), "lon": Decimal("23.590"), "accuracyM": Decimal(acc), "capturedAt": ts},
+        "heading": {"degrees": Decimal("90"), "speedMps": Decimal("1.4")},
+        "signal": {"level": Decimal("3"), "networkType": "cellular"},
+    }
+
+
+class PathTable:
+    """History table for the path route: the newest-first lookup (Limit=1) returns `newest`;
+    the window query returns `pages` one per call, linked by LastEvaluatedKey."""
+
+    def __init__(self, newest=(), pages=((),)):
+        self.newest, self.pages, self.queries = list(newest), [list(p) for p in pages], []
+
+    def query(self, **kwargs):
+        self.queries.append(kwargs)
+        if kwargs.get("Limit") == 1:
+            return {"Items": self.newest[:1]}
+        page = len([q for q in self.queries if "Limit" not in q]) - 1
+        out = {"Items": self.pages[page]}
+        if page + 1 < len(self.pages):
+            out["LastEvaluatedKey"] = {"deviceId": "d1", "timestamp": self.pages[page][-1]["timestamp"]}
+        return out
+
+
+class PathTests(QueryTestCase):
+    ROUTE = "/api/devices/{deviceId}/path"
+
+    def call_path(self, minutes=None, device_id="d1"):
+        event = {"resource": self.ROUTE, "pathParameters": {"deviceId": device_id}}
+        if minutes is not None:
+            event["queryStringParameters"] = {"minutes": minutes}
+        res = query.handler(event, None)
+        return res["statusCode"], json.loads(res["body"])
+
+    def use_history(self, table):
+        self.use_tables(SNAPSHOTS_TABLE=table)
+        return table
+
+    def test_window_ends_at_newest_snapshot(self):
+        newest = path_snap("2026-11-20T18:30:02Z")
+        table = self.use_history(PathTable([newest], [[path_snap("2026-11-20T18:25:00Z"), newest]]))
+        status, body = self.call_path("10")
+        self.assertEqual(status, 200)
+        self.assertEqual((body["deviceId"], body["minutes"]), ("d1", 10))
+        self.assertEqual((body["from"], body["to"]), ("2026-11-20T18:20:02Z", "2026-11-20T18:30:02Z"))
+        lookup, window = table.queries
+        self.assertFalse(lookup["ScanIndexForward"])
+        self.assertTrue(window["ScanIndexForward"])
+        values = window["KeyConditionExpression"].get_expression()["values"]
+        self.assertEqual(values[1].get_expression()["values"][1:], ("2026-11-20T18:20:02Z", "2026-11-20T18:30:02Z"))
+        self.assertEqual([p["timestamp"] for p in body["points"]], ["2026-11-20T18:25:00Z", "2026-11-20T18:30:02Z"])
+        self.assertEqual(body["summary"]["pointCount"], 2)
+
+    def test_default_minutes_is_10(self):
+        self.use_history(PathTable([path_snap("2026-11-20T18:30:02Z")]))
+        _, body = self.call_path()
+        self.assertEqual((body["minutes"], body["from"]), (10, "2026-11-20T18:20:02Z"))
+
+    def test_presets_and_bounds_accepted(self):
+        for minutes in ("1", "5", "20", "60", "120"):
+            self.use_history(PathTable([path_snap("2026-11-20T18:30:02Z")]))
+            status, body = self.call_path(minutes)
+            self.assertEqual((status, body["minutes"]), (200, int(minutes)))
+
+    def test_invalid_minutes_is_400_without_reading(self):
+        table = self.use_history(PathTable())
+        for bad in ("0", "-5", "121", "abc", "7.5", ""):
+            status, body = self.call_path(bad)
+            self.assertEqual((status, body), (400, {"error": "minutes must be an integer between 1 and 120"}))
+        self.assertEqual(table.queries, [])
+
+    def test_reads_every_page(self):
+        pages = [[path_snap("2026-11-20T18:21:00Z")], [path_snap("2026-11-20T18:21:05Z")], [path_snap("2026-11-20T18:21:10Z")]]
+        table = self.use_history(PathTable([path_snap("2026-11-20T18:21:10Z")], pages))
+        _, body = self.call_path("5")
+        window_queries = [q for q in table.queries if "Limit" not in q]
+        self.assertEqual(len(window_queries), 3)
+        self.assertNotIn("ExclusiveStartKey", window_queries[0])
+        self.assertEqual(window_queries[1]["ExclusiveStartKey"]["timestamp"], "2026-11-20T18:21:00Z")
+        self.assertEqual(body["summary"]["pointCount"], 3)
+
+    def test_device_without_history(self):
+        table = self.use_history(PathTable())
+        status, body = self.call_path("5", device_id="unknown-phone")
+        self.assertEqual((status, body), (200, {
+            "deviceId": "unknown-phone", "minutes": 5, "from": None, "to": None, "points": [],
+            "summary": {"pointCount": 0, "distanceM": 0.0, "durationSeconds": 0, "maxSpeedMps": None},
+        }))
+        self.assertEqual(len(table.queries), 1)  # only the newest-snapshot lookup
+
+    def test_no_usable_fix_keeps_the_window(self):
+        bad = path_snap("2026-11-20T18:30:02Z", acc="500")
+        self.use_history(PathTable([bad], [[bad]]))
+        _, body = self.call_path("5")
+        self.assertEqual((body["from"], body["to"], body["points"]), ("2026-11-20T18:25:02Z", "2026-11-20T18:30:02Z", []))
+        self.assertEqual(body["summary"]["pointCount"], 0)
+
+    def test_points_are_plain_json(self):
+        snap = path_snap("2026-11-20T18:30:02Z")
+        self.use_history(PathTable([snap], [[snap]]))
+        _, body = self.call_path("5")
+        self.assertEqual(body["points"][0], {
+            "timestamp": "2026-11-20T18:30:02Z", "lat": 46.77, "lon": 23.59, "accuracyM": 5,
+            "heading": {"degrees": 90, "speedMps": 1.4}, "travelStatus": "walking",
+            "signalLevel": 3, "gapBefore": False,
+        })
+
+    def test_without_resource_the_path_route_resolves(self):
+        table = self.use_history(PathTable())
+        res = query.handler({"pathParameters": {"deviceId": "d1"}, "path": "/api/devices/d1/path/"}, None)
+        self.assertEqual(res["statusCode"], 200)
+        self.assertEqual(len(table.queries), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
