@@ -1,8 +1,8 @@
 import 'dart:math' as math;
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 import 'device_identity.dart';
 import 'telemetry_service.dart';
@@ -10,64 +10,84 @@ import 'telemetry_service.dart';
 void main() => runApp(const FleetTelemetryApp());
 
 /// ---------------------------------------------------------------------------
-/// Palette — "Liquid Glass" colours derived from the active brightness.
-/// Text/glass tones come from here; the vivid backdrop lives in [_LiquidBackground].
+/// Palette — "Industrial Fleet Telemetry" dark-slate design system.
+/// Flat tonal surfaces + 1px hairline borders; emerald primary = healthy;
+/// amber = warning, crimson = critical, cyan = charging, slate = offline.
 /// ---------------------------------------------------------------------------
 class _Palette {
-  const _Palette(this.dark);
-  final bool dark;
+  const _Palette();
+  factory _Palette.of(BuildContext _) => const _Palette();
 
-  factory _Palette.of(BuildContext c) =>
-      _Palette(Theme.of(c).brightness == Brightness.dark);
+  // Tonal surface layers (lowest -> highest).
+  static const bg = Color(0xFF0B1326); // page / canvas
+  static const panel = Color(0xFF0D162B); // header / bottom bar
+  static const card = Color(0xFF131B2E); // surface-container-low (cards)
+  static const cardHigh = Color(0xFF171F33); // elevated / strong cards
+  static const deep = Color(0xFF060E20); // inputs, progress tracks
 
-  Color get text => dark ? Colors.white : const Color(0xFF17182A);
-  Color get subtext =>
-      dark ? Colors.white.withValues(alpha: 0.64) : const Color(0xFF5B5E74);
+  Color get text => const Color(0xFFDAE2FD); // on-surface
+  Color get subtext => const Color(0xFF86948A); // muted
+  Color get border => const Color(0xFF1E293B); // 1px hairline
+  Color get track => deep; // recessed tracks
+  bool get dark => true;
 
-  Color get glass => dark
-      ? Colors.white.withValues(alpha: 0.09)
-      : Colors.white.withValues(alpha: 0.52);
-  Color get glassStrong => dark
-      ? Colors.white.withValues(alpha: 0.16)
-      : Colors.white.withValues(alpha: 0.66);
-  // Near-opaque "glass-look" fills for tiles that skip the real backdrop blur
-  // (keeps the look but avoids an expensive BackdropFilter per card).
-  Color get glassSolid => dark
-      ? const Color(0xFF1C1E2C).withValues(alpha: 0.82)
-      : Colors.white.withValues(alpha: 0.86);
-  Color get glassSolidStrong => dark
-      ? const Color(0xFF24263A).withValues(alpha: 0.90)
-      : Colors.white.withValues(alpha: 0.92);
-  Color get border => dark
-      ? Colors.white.withValues(alpha: 0.18)
-      : Colors.white.withValues(alpha: 0.75);
-  Color get track => dark
-      ? Colors.white.withValues(alpha: 0.16)
-      : Colors.black.withValues(alpha: 0.06);
-
-  // Status accents (read well on glass in both modes).
-  static const ok = Color(0xFF30D158); // iOS green
-  static const info = Color(0xFF0A84FF); // iOS blue
-  static const warn = Color(0xFFFF9F0A); // iOS orange
-  static const danger = Color(0xFFFF453A); // iOS red
+  // Semantic status colours (communicate state only, never decoration).
+  static const primary = Color(0xFF10B981); // emerald — healthy / brand
+  static const ok = Color(0xFF10B981);
+  static const info = Color(0xFF3B82F6); // blue — medium
+  static const warn = Color(0xFFF59E0B); // amber — warning / low
+  static const danger = Color(0xFFEF4444); // crimson — critical
+  static const charging = Color(0xFF22D3EE); // cyan — charging
+  static const offline = Color(0xFF64748B); // slate — offline / idle
 }
 
-const _radius = 26.0;
+/// Soft (4px) corner scale; large containers use 8px.
+const _radius = 8.0;
+const _radiusSmall = 4.0;
+
+/// JetBrains Mono for all quantitative telemetry (tabular numerals so live
+/// values don't jitter horizontally).
+TextStyle _mono({
+  double size = 14,
+  FontWeight weight = FontWeight.w500,
+  Color? color,
+  double spacing = 0,
+  double height = 1.0,
+}) =>
+    GoogleFonts.jetBrainsMono(
+      fontSize: size,
+      fontWeight: weight,
+      color: color,
+      letterSpacing: spacing,
+      height: height,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+
+/// Uppercase label-sm: section headers, KPI titles, badges.
+TextStyle _labelSm(Color color) => GoogleFonts.inter(
+      fontSize: 11,
+      fontWeight: FontWeight.w600,
+      letterSpacing: 0.44, // ~0.04em
+      color: color,
+    );
 
 class FleetTelemetryApp extends StatelessWidget {
   const FleetTelemetryApp({super.key});
 
-  ThemeData _theme(Brightness b) {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF5B6CFF),
-      brightness: b,
-    );
-    // No fontFamily override → SF Pro on iOS, Roboto on Android (native feel).
-    return ThemeData(
-      colorScheme: scheme,
+  ThemeData _theme() {
+    final base = ThemeData(
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: _Palette.primary,
+        brightness: Brightness.dark,
+        surface: _Palette.bg,
+      ),
       useMaterial3: true,
-      scaffoldBackgroundColor:
-          b == Brightness.dark ? const Color(0xFF07070E) : const Color(0xFFEAF0FF),
+      scaffoldBackgroundColor: _Palette.bg,
+    );
+    // Inter for all UI chrome.
+    return base.copyWith(
+      textTheme: GoogleFonts.interTextTheme(base.textTheme)
+          .apply(bodyColor: const Color(0xFFDAE2FD), displayColor: const Color(0xFFDAE2FD)),
     );
   }
 
@@ -75,9 +95,9 @@ class FleetTelemetryApp extends StatelessWidget {
   Widget build(BuildContext context) => MaterialApp(
         title: 'Fleet Telemetry',
         debugShowCheckedModeBanner: false,
-        theme: _theme(Brightness.light),
-        darkTheme: _theme(Brightness.dark),
-        themeMode: ThemeMode.system,
+        theme: _theme(),
+        darkTheme: _theme(),
+        themeMode: ThemeMode.dark,
         home: const TelemetryScreen(),
       );
 }
@@ -108,8 +128,6 @@ class _TelemetryScreenState extends State<TelemetryScreen>
     _init();
   }
 
-  /// Resolve the per-install device id first, then start streaming so the very
-  /// first batch already carries the correct id.
   Future<void> _init() async {
     final id = await resolveDeviceId();
     svc.deviceId = id;
@@ -135,7 +153,7 @@ class _TelemetryScreenState extends State<TelemetryScreen>
             Icons.error_rounded, 'Rejected', 'The server refused the payload'),
         SendStatus.unauthorized => const _StatusLook(_Palette.danger,
             Icons.lock_rounded, 'Unauthorized', 'Check the API key'),
-        SendStatus.idle => const _StatusLook(Color(0xFF9AA0B4),
+        SendStatus.idle => const _StatusLook(_Palette.offline,
             Icons.pause_circle_rounded, 'Paused', 'Telemetry capture is stopped'),
       };
 
@@ -143,39 +161,39 @@ class _TelemetryScreenState extends State<TelemetryScreen>
   Widget build(BuildContext context) {
     final p = _Palette.of(context);
     return Scaffold(
+      backgroundColor: _Palette.bg,
       extendBody: true,
-      body: Stack(
-        children: [
-          const Positioned.fill(child: _LiquidBackground()),
-          SafeArea(
-            bottom: false,
-            child: ListenableBuilder(
-              listenable: svc,
-              builder: (context, _) {
-                final look = _look(svc.status);
-                final a = svc.lastAccel;
-                return Column(
-                  children: [
-                    _Header(
-                      deviceId: _deviceId.isEmpty ? 'identifying…' : _deviceId,
-                      running: svc.running,
-                    ),
-                    Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 110),
-                        child: Column(
-                          children: [
-                          _StatusHero(
-                            look: look,
-                            running: svc.running,
-                            pulse: _pulse,
-                            lastSuccess: svc.lastSuccessAt,
-                            detail: svc.lastMessage,
-                          ),
-                          const SizedBox(height: 18),
-                          const _SectionLabel('Live readings'),
-                          const SizedBox(height: 10),
-                          Row(
+      body: SafeArea(
+        bottom: false,
+        child: ListenableBuilder(
+          listenable: svc,
+          builder: (context, _) {
+            final look = _look(svc.status);
+            final a = svc.lastAccel;
+            return Column(
+              children: [
+                _Header(
+                  deviceId: _deviceId.isEmpty ? 'identifying…' : _deviceId,
+                  running: svc.running,
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+                    child: Column(
+                      children: [
+                        _StatusHero(
+                          look: look,
+                          running: svc.running,
+                          pulse: _pulse,
+                          lastSuccess: svc.lastSuccessAt,
+                          detail: svc.lastMessage,
+                        ),
+                        const SizedBox(height: 18),
+                        const _SectionLabel('Live readings'),
+                        const SizedBox(height: 10),
+                        IntrinsicHeight(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
                               Expanded(
                                 child: _BatteryTile(
@@ -189,54 +207,45 @@ class _TelemetryScreenState extends State<TelemetryScreen>
                               ),
                             ],
                           ),
-                          const SizedBox(height: 12),
-                          _AccelCard(accel: a),
-                          const SizedBox(height: 18),
-                          const _SectionLabel('Transmission'),
-                          const SizedBox(height: 10),
-                          Row(
-                            children: [
-                              Expanded(
-                                child: _StatTile(
-                                  icon: Icons.cloud_done_rounded,
-                                  label: 'Events sent',
-                                  value: _compact(svc.totalAccepted),
-                                  tint: _Palette.ok,
-                                ),
+                        ),
+                        const SizedBox(height: 12),
+                        _AccelCard(accel: a),
+                        const SizedBox(height: 18),
+                        const _SectionLabel('Transmission'),
+                        const SizedBox(height: 10),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _StatTile(
+                                icon: Icons.cloud_done_rounded,
+                                label: 'Events sent',
+                                value: _compact(svc.totalAccepted),
+                                tint: _Palette.ok,
                               ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: _StatTile(
-                                  icon: Icons.inbox_rounded,
-                                  label: 'Queued offline',
-                                  value: _compact(svc.queued),
-                                  tint: svc.queued > 0 ? _Palette.warn : p.subtext,
-                                ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: _StatTile(
+                                icon: Icons.inbox_rounded,
+                                label: 'Queued offline',
+                                value: _compact(svc.queued),
+                                tint: svc.queued > 0 ? _Palette.warn : p.subtext,
                               ),
-                            ],
-                          ),
+                            ),
                           ],
                         ),
-                      ),
+                      ],
                     ),
-                  ],
-                );
-              },
-            ),
-          ),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: ListenableBuilder(
-              listenable: svc,
-              builder: (context, _) => _ActionBar(
-                running: svc.running,
-                onPressed: () => svc.running ? svc.stop() : svc.start(),
-              ),
-            ),
-          ),
-        ],
+                  ),
+                ),
+                _ActionBar(
+                  running: svc.running,
+                  onPressed: () => svc.running ? svc.stop() : svc.start(),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
@@ -249,161 +258,51 @@ class _TelemetryScreenState extends State<TelemetryScreen>
 }
 
 /// ---------------------------------------------------------------------------
-/// Vivid, soft backdrop so the frosted glass has something to refract.
+/// Flat card — the industrial surface: tonal fill + 1px hairline border.
+/// [tint] gives a card a semantic border + faint wash (e.g. the status hero).
 /// ---------------------------------------------------------------------------
-class _LiquidBackground extends StatelessWidget {
-  const _LiquidBackground();
-
-  @override
-  Widget build(BuildContext context) {
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: dark
-              ? const [Color(0xFF0A0A14), Color(0xFF130E24), Color(0xFF0C1322)]
-              : const [Color(0xFFE9EEFF), Color(0xFFF3ECFF), Color(0xFFFFF0F6)],
-        ),
-      ),
-      child: Stack(
-        children: [
-          _blob(const Alignment(-1.1, -1.0), 360,
-              const Color(0xFF6C5CFF), dark ? 0.40 : 0.55),
-          _blob(const Alignment(1.2, -0.5), 320,
-              const Color(0xFF00C2FF), dark ? 0.30 : 0.42),
-          _blob(const Alignment(-0.9, 1.1), 380,
-              const Color(0xFFFF6FB5), dark ? 0.28 : 0.42),
-          _blob(const Alignment(1.1, 1.2), 340,
-              const Color(0xFF8B5CF6), dark ? 0.32 : 0.40),
-        ],
-      ),
-    );
-  }
-
-  Widget _blob(Alignment align, double size, Color color, double alpha) =>
-      Align(
-        alignment: align,
-        child: Container(
-          width: size,
-          height: size,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: RadialGradient(
-              colors: [color.withValues(alpha: alpha), color.withValues(alpha: 0)],
-            ),
-          ),
-        ),
-      );
-}
-
-/// ---------------------------------------------------------------------------
-/// The core Liquid-Glass surface: real backdrop blur + bright edge + highlight.
-/// ---------------------------------------------------------------------------
-class _Glass extends StatelessWidget {
-  const _Glass({
+class _Card extends StatelessWidget {
+  const _Card({
     required this.child,
-    this.padding = const EdgeInsets.all(18),
-    this.radius = _radius,
     this.tint,
     this.strong = false,
-    this.blur = false,
   });
 
   final Widget child;
-  final EdgeInsetsGeometry padding;
-  final double radius;
   final Color? tint;
   final bool strong;
 
-  /// When true, render a real `BackdropFilter` (expensive). Small tiles leave
-  /// this false and use a near-opaque fill that looks the same but rasterises
-  /// far cheaper — only the big hero + action bar pay for live blur.
-  final bool blur;
-
   @override
   Widget build(BuildContext context) {
-    final p = _Palette.of(context);
-    final shape = BorderRadius.circular(radius);
-    // The surface contents (fill + sheen + tint + child) are identical whether
-    // or not we blur; only big surfaces wrap this in a live BackdropFilter.
-    final surface = Container(
-      decoration: BoxDecoration(
-        color: blur
-            ? (strong ? p.glassStrong : p.glass)
-            : (strong ? p.glassSolidStrong : p.glassSolid),
-        borderRadius: shape,
-        border: Border.all(color: p.border, width: 1),
-      ),
-      child: Stack(
-        children: [
-          // Top-left sheen — the signature liquid-glass highlight.
-          Positioned.fill(
-            child: IgnorePointer(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  borderRadius: shape,
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      Colors.white.withValues(alpha: p.dark ? 0.14 : 0.40),
-                      Colors.white.withValues(alpha: 0.0),
-                    ],
-                    stops: const [0.0, 0.55],
-                  ),
-                ),
-              ),
-            ),
+    const shape = BorderRadius.all(Radius.circular(_radius));
+    final fill = strong ? _Palette.cardHigh : _Palette.card;
+    return RepaintBoundary(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: fill,
+          borderRadius: shape,
+          border: Border.all(
+            color: tint != null
+                ? tint!.withValues(alpha: 0.45)
+                : const Color(0xFF1E293B),
+            width: 1,
           ),
-          // Optional status colour wash.
-          if (tint != null)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    borderRadius: shape,
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        tint!.withValues(alpha: 0.26),
-                        tint!.withValues(alpha: 0.05),
-                      ],
+        ),
+        child: Stack(
+          children: [
+            if (tint != null)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      borderRadius: shape,
+                      color: tint!.withValues(alpha: 0.07),
                     ),
                   ),
                 ),
               ),
-            ),
-          Padding(padding: padding, child: child),
-        ],
-      ),
-    );
-
-    // RepaintBoundary isolates each card so a sibling's repaint (e.g. the
-    // ticking accel bars) doesn't re-rasterise this whole surface.
-    return RepaintBoundary(
-      child: DecoratedBox(
-        // Soft outer shadow to lift the glass off the backdrop.
-        decoration: BoxDecoration(
-          borderRadius: shape,
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: p.dark ? 0.35 : 0.10),
-              blurRadius: 24,
-              offset: const Offset(0, 12),
-            ),
+            Padding(padding: const EdgeInsets.all(16), child: child),
           ],
-        ),
-        child: ClipRRect(
-          borderRadius: shape,
-          child: blur
-              ? BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-                  child: surface,
-                )
-              : surface,
         ),
       ),
     );
@@ -411,7 +310,7 @@ class _Glass extends StatelessWidget {
 }
 
 /// ---------------------------------------------------------------------------
-/// Header
+/// Header — logo + title, mono device id, LIVE badge, hairline bottom border.
 /// ---------------------------------------------------------------------------
 class _Header extends StatelessWidget {
   const _Header({required this.deviceId, required this.running});
@@ -422,29 +321,23 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = _Palette.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 14, 16, 12),
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      decoration: const BoxDecoration(
+        color: _Palette.panel,
+        border: Border(bottom: BorderSide(color: Color(0xFF1E293B))),
+      ),
       child: Row(
         children: [
           Container(
-            height: 44,
-            width: 44,
+            height: 38,
+            width: 38,
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF6C5CFF), Color(0xFF9B5CFF)],
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: const Color(0xFF6C5CFF).withValues(alpha: 0.45),
-                  blurRadius: 16,
-                  offset: const Offset(0, 6),
-                ),
-              ],
+              borderRadius: BorderRadius.circular(_radius),
+              color: _Palette.primary.withValues(alpha: 0.15),
+              border: Border.all(color: _Palette.primary.withValues(alpha: 0.5)),
             ),
-            child: const Icon(Icons.sensors_rounded, color: Colors.white),
+            child: const Icon(Icons.radar_rounded, color: _Palette.primary, size: 22),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -453,13 +346,14 @@ class _Header extends StatelessWidget {
               children: [
                 Text(
                   'Fleet Telemetry',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
+                  style: GoogleFonts.inter(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
                     color: p.text,
-                    letterSpacing: -0.3,
+                    letterSpacing: -0.2,
                   ),
                 ),
+                const SizedBox(height: 2),
                 GestureDetector(
                   onTap: () {
                     Clipboard.setData(ClipboardData(text: deviceId));
@@ -479,15 +373,11 @@ class _Header extends StatelessWidget {
                           deviceId,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: p.subtext,
-                            fontFeatures: const [FontFeature.tabularFigures()],
-                          ),
+                          style: _mono(size: 12, color: p.subtext),
                         ),
                       ),
                       const SizedBox(width: 5),
-                      Icon(Icons.copy_rounded, size: 12, color: p.subtext),
+                      Icon(Icons.content_copy_rounded, size: 11, color: p.subtext),
                     ],
                   ),
                 ),
@@ -501,45 +391,46 @@ class _Header extends StatelessWidget {
   }
 }
 
+/// Compact 4px status chip with a 6px dot.
+class _Chip extends StatelessWidget {
+  const _Chip({required this.color, required this.label});
+  final Color color;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(_radiusSmall),
+        border: Border.all(color: color.withValues(alpha: 0.45)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            height: 6,
+            width: 6,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 6),
+          Text(label, style: _labelSm(color)),
+        ],
+      ),
+    );
+  }
+}
+
 class _LivePill extends StatelessWidget {
   const _LivePill({required this.running});
   final bool running;
 
   @override
-  Widget build(BuildContext context) {
-    final color = running ? _Palette.ok : const Color(0xFF9AA0B4);
-    return _Glass(
-      radius: 999,
-      padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-      strong: true,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            height: 8,
-            width: 8,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(color: color.withValues(alpha: 0.8), blurRadius: 7),
-              ],
-            ),
-          ),
-          const SizedBox(width: 7),
-          Text(
-            running ? 'LIVE' : 'OFF',
-            style: TextStyle(
-              color: _Palette.of(context).text,
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.6,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => _Chip(
+        color: running ? _Palette.primary : _Palette.offline,
+        label: running ? 'LIVE' : 'OFF',
+      );
 }
 
 /// ---------------------------------------------------------------------------
@@ -571,10 +462,9 @@ class _StatusHero extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = _Palette.of(context);
-    return _Glass(
+    return _Card(
       tint: look.color,
       strong: true,
-      blur: true, // the hero is the one surface that keeps live backdrop blur
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -593,31 +483,33 @@ class _StatusHero extends StatelessWidget {
                   children: [
                     Text(
                       look.title,
-                      style: TextStyle(
-                        fontSize: 21,
-                        fontWeight: FontWeight.w700,
+                      style: GoogleFonts.inter(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
                         color: p.text,
-                        letterSpacing: -0.3,
+                        letterSpacing: -0.2,
                       ),
                     ),
-                    const SizedBox(height: 2),
+                    const SizedBox(height: 3),
                     Text(
                       look.subtitle,
-                      style: TextStyle(fontSize: 13.5, color: p.subtext),
+                      style: GoogleFonts.inter(fontSize: 12.5, color: p.subtext),
                     ),
                   ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 16),
+          Container(height: 1, color: p.border),
+          const SizedBox(height: 14),
           Row(
             children: [
               Expanded(
                 child: _HeroFact(
                     label: 'Last success', value: _timeAgo(lastSuccess)),
               ),
-              Container(width: 1, height: 30, color: p.track),
+              Container(width: 1, height: 28, color: p.border),
               Expanded(
                 child: _HeroFact(
                   label: 'Server',
@@ -657,26 +549,16 @@ class _HeroFact extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            label.toUpperCase(),
-            style: TextStyle(
-              fontSize: 10.5,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.6,
-              color: p.subtext,
-            ),
-          ),
-          const SizedBox(height: 3),
+          Text(label.toUpperCase(), style: _labelSm(p.subtext)),
+          const SizedBox(height: 4),
           Text(
             value,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              color: p.text,
-              fontFamily: mono ? 'monospace' : null,
-            ),
+            style: mono
+                ? _mono(size: 13, weight: FontWeight.w500, color: p.text)
+                : GoogleFonts.inter(
+                    fontSize: 14, fontWeight: FontWeight.w600, color: p.text),
           ),
         ],
       ),
@@ -700,40 +582,37 @@ class _PulseDot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 54,
-      width: 54,
+      height: 48,
+      width: 48,
       child: Stack(
         alignment: Alignment.center,
         children: [
           if (animate)
-            // Own layer so the 60fps pulse repaints only itself — without this
-            // every frame invalidates the hero's BackdropFilter above it and
-            // re-blurs the whole backdrop.
             RepaintBoundary(
               child: AnimatedBuilder(
                 animation: controller,
                 builder: (context, child) {
                   final t = controller.value;
                   return Container(
-                    height: 38 + 16 * t,
-                    width: 38 + 16 * t,
+                    height: 34 + 14 * t,
+                    width: 34 + 14 * t,
                     decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: color.withValues(alpha: 0.22 * (1 - t)),
+                      borderRadius: BorderRadius.circular(_radiusSmall),
+                      color: color.withValues(alpha: 0.18 * (1 - t)),
                     ),
                   );
                 },
               ),
             ),
           Container(
-            height: 46,
-            width: 46,
+            height: 42,
+            width: 42,
             decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: color.withValues(alpha: 0.20),
+              borderRadius: BorderRadius.circular(_radius),
+              color: color.withValues(alpha: 0.15),
               border: Border.all(color: color.withValues(alpha: 0.5)),
             ),
-            child: Icon(icon, color: color, size: 24),
+            child: Icon(icon, color: color, size: 22),
           ),
         ],
       ),
@@ -742,7 +621,7 @@ class _PulseDot extends StatelessWidget {
 }
 
 /// ---------------------------------------------------------------------------
-/// Live-reading tiles
+/// Live-reading tiles (KPI cards)
 /// ---------------------------------------------------------------------------
 class _BatteryTile extends StatelessWidget {
   const _BatteryTile({required this.ratio, required this.charging});
@@ -752,10 +631,11 @@ class _BatteryTile extends StatelessWidget {
 
   Color _color() {
     final r = ratio;
-    if (r == null) return const Color(0xFF9AA0B4);
-    if (r <= 0.15) return _Palette.danger;
-    if (r <= 0.35) return _Palette.warn;
-    return _Palette.ok;
+    if (r == null) return _Palette.offline;
+    if (r < 0.20) return _Palette.danger;
+    if (r < 0.40) return _Palette.warn;
+    if (r < 0.70) return _Palette.info;
+    return _Palette.primary;
   }
 
   @override
@@ -764,72 +644,33 @@ class _BatteryTile extends StatelessWidget {
     final r = ratio;
     final pct = r == null ? '—' : '${(r * 100).round()}';
     final color = _color();
-    return _Glass(
-      padding: const EdgeInsets.all(16),
+    return _Card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Text('BATTERY', style: _labelSm(p.subtext)),
+          const SizedBox(height: 12),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
             children: [
-              SizedBox(
-                height: 54,
-                width: 54,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    SizedBox(
-                      height: 54,
-                      width: 54,
-                      child: CircularProgressIndicator(
-                        value: r ?? 0,
-                        strokeWidth: 6,
-                        strokeCap: StrokeCap.round,
-                        backgroundColor: p.track,
-                        valueColor: AlwaysStoppedAnimation(color),
-                      ),
-                    ),
-                    Icon(
-                      (charging ?? false)
-                          ? Icons.bolt_rounded
-                          : Icons.battery_full_rounded,
-                      size: 20,
-                      color: color,
-                    ),
-                  ],
-                ),
-              ),
-              const Spacer(),
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.baseline,
-                textBaseline: TextBaseline.alphabetic,
-                children: [
-                  Text(
-                    pct,
-                    style: TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.w700,
-                      height: 1,
-                      color: p.text,
-                      letterSpacing: -0.5,
-                    ),
-                  ),
-                  Text(
-                    '%',
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      color: p.subtext,
-                    ),
-                  ),
-                ],
+              Text(pct, style: _mono(size: 28, weight: FontWeight.w600, color: p.text)),
+              const SizedBox(width: 2),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 3),
+                child: Text('%', style: _mono(size: 14, color: p.subtext)),
               ),
             ],
           ),
           const SizedBox(height: 12),
-          Text(
-            'Battery',
-            style: TextStyle(
-                fontSize: 13, fontWeight: FontWeight.w600, color: p.subtext),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(_radiusSmall),
+            child: LinearProgressIndicator(
+              value: r ?? 0,
+              minHeight: 6,
+              backgroundColor: p.track,
+              valueColor: AlwaysStoppedAnimation(color),
+            ),
           ),
         ],
       ),
@@ -846,42 +687,37 @@ class _ChargingTile extends StatelessWidget {
     final p = _Palette.of(context);
     final c = charging;
     final on = c == true;
-    final color = on ? _Palette.ok : p.subtext;
+    final color = on ? _Palette.charging : _Palette.offline;
     final label = c == null
         ? '—'
         : on
             ? 'Plugged in'
             : 'On battery';
-    return _Glass(
-      padding: const EdgeInsets.all(16),
+    return _Card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Text('CHARGING STATE', style: _labelSm(p.subtext)),
+          const SizedBox(height: 12),
           Container(
-            height: 54,
-            width: 54,
+            height: 40,
+            width: 40,
             decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.16),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: color.withValues(alpha: 0.4)),
+              color: color.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(_radius),
+              border: Border.all(color: color.withValues(alpha: 0.45)),
             ),
             child: Icon(
-              on ? Icons.power_rounded : Icons.battery_charging_full_rounded,
+              on ? Icons.bolt_rounded : Icons.battery_std_rounded,
               color: color,
-              size: 26,
+              size: 22,
             ),
           ),
           const SizedBox(height: 12),
           Text(
             label,
-            style: TextStyle(
-                fontSize: 17, fontWeight: FontWeight.w700, color: p.text),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            'Charging state',
-            style: TextStyle(
-                fontSize: 13, fontWeight: FontWeight.w600, color: p.subtext),
+            style: GoogleFonts.inter(
+                fontSize: 15, fontWeight: FontWeight.w600, color: p.text),
           ),
         ],
       ),
@@ -905,28 +741,19 @@ class _StatTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = _Palette.of(context);
-    return _Glass(
-      padding: const EdgeInsets.all(16),
+    return _Card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 18, color: tint),
-          const SizedBox(height: 10),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 26,
-              fontWeight: FontWeight.w700,
-              color: p.text,
-              letterSpacing: -0.5,
-            ),
+          Row(
+            children: [
+              Icon(icon, size: 15, color: tint),
+              const SizedBox(width: 6),
+              Expanded(child: Text(label.toUpperCase(), style: _labelSm(p.subtext))),
+            ],
           ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: TextStyle(
-                fontSize: 13, fontWeight: FontWeight.w600, color: p.subtext),
-          ),
+          const SizedBox(height: 12),
+          Text(value, style: _mono(size: 26, weight: FontWeight.w600, color: p.text)),
         ],
       ),
     );
@@ -951,37 +778,26 @@ class _AccelCard extends StatelessWidget {
     final z = hasData ? (a.z as double) : 0.0;
     final magnitude = math.sqrt(x * x + y * y + z * z);
 
-    return _Glass(
+    return _Card(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(Icons.vibration_rounded, size: 18, color: p.text),
-              const SizedBox(width: 8),
-              Text(
-                'Acceleration',
-                style: TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.w700, color: p.text),
-              ),
+              Text('ACCELERATION', style: _labelSm(p.subtext)),
               const Spacer(),
               Text(
                 hasData ? '${magnitude.toStringAsFixed(2)} m/s²' : '—',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: p.subtext,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
+                style: _mono(size: 12, color: p.subtext),
               ),
             ],
           ),
           const SizedBox(height: 16),
-          _AxisBar(axis: 'X', value: x, color: const Color(0xFFFF6FA3)),
+          _AxisBar(axis: 'X', value: x, color: _Palette.warn),
           const SizedBox(height: 12),
-          _AxisBar(axis: 'Y', value: y, color: const Color(0xFF4FA9FF)),
+          _AxisBar(axis: 'Y', value: y, color: _Palette.info),
           const SizedBox(height: 12),
-          _AxisBar(axis: 'Z', value: z, color: const Color(0xFF34D399)),
+          _AxisBar(axis: 'Z', value: z, color: _Palette.primary),
         ],
       ),
     );
@@ -1005,12 +821,8 @@ class _AxisBar extends StatelessWidget {
     return Row(
       children: [
         SizedBox(
-          width: 18,
-          child: Text(
-            axis,
-            style: TextStyle(
-                fontSize: 13, fontWeight: FontWeight.w700, color: color),
-          ),
+          width: 16,
+          child: Text(axis, style: _mono(size: 12, weight: FontWeight.w600, color: color)),
         ),
         const SizedBox(width: 8),
         Expanded(
@@ -1019,17 +831,17 @@ class _AxisBar extends StatelessWidget {
               final half = c.maxWidth / 2;
               final len = half * frac.abs();
               return Container(
-                height: 10,
+                height: 8,
                 decoration: BoxDecoration(
                   color: p.track,
-                  borderRadius: BorderRadius.circular(6),
+                  borderRadius: BorderRadius.circular(_radiusSmall),
                 ),
                 child: Stack(
                   children: [
                     Align(
                       alignment: Alignment.center,
                       child: Container(
-                          width: 1.5, color: p.text.withValues(alpha: 0.18)),
+                          width: 1, color: p.text.withValues(alpha: 0.15)),
                     ),
                     Positioned(
                       left: frac >= 0 ? half : half - len,
@@ -1040,12 +852,7 @@ class _AxisBar extends StatelessWidget {
                         width: len,
                         decoration: BoxDecoration(
                           color: color,
-                          borderRadius: BorderRadius.circular(6),
-                          boxShadow: [
-                            BoxShadow(
-                                color: color.withValues(alpha: 0.5),
-                                blurRadius: 6),
-                          ],
+                          borderRadius: BorderRadius.circular(_radiusSmall),
                         ),
                       ),
                     ),
@@ -1061,12 +868,7 @@ class _AxisBar extends StatelessWidget {
           child: Text(
             value.toStringAsFixed(2),
             textAlign: TextAlign.right,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: p.text,
-              fontFeatures: const [FontFeature.tabularFigures()],
-            ),
+            style: _mono(size: 12, color: p.text),
           ),
         ),
       ],
@@ -1075,7 +877,7 @@ class _AxisBar extends StatelessWidget {
 }
 
 /// ---------------------------------------------------------------------------
-/// Section label + floating action bar
+/// Section label + bottom action bar
 /// ---------------------------------------------------------------------------
 class _SectionLabel extends StatelessWidget {
   const _SectionLabel(this.text);
@@ -1083,17 +885,9 @@ class _SectionLabel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 6),
-      child: Text(
-        text.toUpperCase(),
-        style: TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w800,
-          letterSpacing: 0.8,
-          color: _Palette.of(context).subtext,
-        ),
-      ),
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Text(text.toUpperCase(), style: _labelSm(_Palette.of(context).subtext)),
     );
   }
 }
@@ -1106,61 +900,44 @@ class _ActionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final gradient = running
-        ? const [Color(0xFFFF5A52), Color(0xFFFF2D55)]
-        : const [Color(0xFF6C5CFF), Color(0xFF9B5CFF)];
-    final glow = running ? const Color(0xFFFF2D55) : const Color(0xFF6C5CFF);
-    return Padding(
+    // Primary (start) = emerald fill, dark text. Stop = crimson fill, white text.
+    final fill = running ? _Palette.danger : _Palette.primary;
+    final fg = running ? Colors.white : _Palette.bg;
+    return Container(
       padding: EdgeInsets.fromLTRB(
-          16, 8, 16, 14 + MediaQuery.of(context).padding.bottom),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(18),
-          boxShadow: [
-            BoxShadow(
-              color: glow.withValues(alpha: 0.45),
-              blurRadius: 22,
-              offset: const Offset(0, 8),
-            ),
-          ],
-        ),
-        child: Material(
-          color: Colors.transparent,
-          borderRadius: BorderRadius.circular(18),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(18),
-            onTap: onPressed,
-            child: Ink(
-              height: 58,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(18),
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: gradient,
-                ),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
-              ),
-              child: Center(
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      running ? Icons.stop_rounded : Icons.play_arrow_rounded,
-                      color: Colors.white,
+          16, 12, 16, 12 + MediaQuery.of(context).padding.bottom),
+      decoration: const BoxDecoration(
+        color: _Palette.panel,
+        border: Border(top: BorderSide(color: Color(0xFF1E293B))),
+      ),
+      child: Material(
+        color: fill,
+        borderRadius: BorderRadius.circular(_radius),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(_radius),
+          onTap: onPressed,
+          child: SizedBox(
+            height: 48,
+            child: Center(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    running ? Icons.stop_rounded : Icons.play_arrow_rounded,
+                    color: fg,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    running ? 'Stop streaming' : 'Start streaming',
+                    style: GoogleFonts.inter(
+                      color: fg,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.2,
                     ),
-                    const SizedBox(width: 8),
-                    Text(
-                      running ? 'Stop streaming' : 'Start streaming',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ),
