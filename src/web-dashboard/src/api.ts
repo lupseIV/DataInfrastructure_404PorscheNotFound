@@ -3,8 +3,8 @@
 // which one it gets.
 
 import { config } from "./config";
-import { getMockDevices, getMockTelemetry } from "./mock/mockData";
-import type { Device, DeviceTelemetry } from "./types";
+import { getMockAlerts, getMockDevices, getMockTelemetry } from "./mock/mockData";
+import type { Device, DeviceAlerts, DeviceTelemetry } from "./types";
 
 export class ApiError extends Error {
   /** HTTP status, or null for network/configuration errors. */
@@ -78,4 +78,39 @@ export async function getDeviceTelemetry(
     throw new ApiError("Unexpected response from the telemetry endpoint");
   }
   return telemetry;
+}
+
+/** Alerts of one device, plus whether the endpoint exists on this backend. */
+export interface DeviceAlertsResult extends DeviceAlerts {
+  /** false while the backend has no alerts route yet (API Gateway answers 403 or 404). */
+  available: boolean;
+}
+
+/**
+ * GET /api/devices/{deviceId}/alerts?limit=N — battery and connectivity events, newest first.
+ * Documented in Contract C but not built yet: a missing route is reported as
+ * `available: false` instead of an error, so the dashboard keeps working until it exists.
+ */
+export async function getDeviceAlerts(
+  deviceId: string,
+  limit: number = config.historyLimit,
+  signal?: AbortSignal,
+): Promise<DeviceAlertsResult> {
+  if (config.useMockData) {
+    await wait(MOCK_DELAY_MS);
+    return { ...getMockAlerts(deviceId, limit), available: true };
+  }
+  const path = `/api/devices/${encodeURIComponent(deviceId)}/alerts?limit=${limit}`;
+  try {
+    const alerts = await getJson<DeviceAlerts>(path, signal);
+    if (!alerts || !Array.isArray(alerts.records)) {
+      throw new ApiError("Unexpected response from the alerts endpoint");
+    }
+    return { ...alerts, available: true };
+  } catch (err) {
+    if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
+      return { deviceId, records: [], available: false };
+    }
+    throw err;
+  }
 }
