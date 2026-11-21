@@ -1,0 +1,18 @@
+services:
+  moto:
+    image: motoserver/moto:latest
+    container_name: moto-server
+    ports:
+      - "5000:5000"
+    environment:
+      - MOTO_PORT=5000
+      # Optional: persist or inspect Moto API state
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Required if your CDK stack deploys Lambda functions that Moto runs via Docker
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/moto-api/')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
