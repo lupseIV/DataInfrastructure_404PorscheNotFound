@@ -1,4 +1,4 @@
-name: Frontend deploy
+name: Web / Dashboard deploy
 
 # Builds the web dashboard, uploads it to the site bucket and invalidates CloudFront.
 # Expects an npm project in src/web-dashboard whose `npm run build` writes to dist/,
@@ -8,11 +8,11 @@ on:
     branches: [main]
     paths:
       - 'src/web-dashboard/**'
-      - '.github/workflows/frontend-deploy.yml'
+      - '.github/workflows/web-dashboard-deploy.yml'
   pull_request:
     paths:
       - 'src/web-dashboard/**'
-      - '.github/workflows/frontend-deploy.yml'
+      - '.github/workflows/web-dashboard-deploy.yml'
   workflow_dispatch:
 
 permissions:
@@ -75,11 +75,11 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
+      - name: AWS login
+        uses: ./.github/actions/aws-login
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-arn: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
 
       - name: Read stack outputs
         id: stack

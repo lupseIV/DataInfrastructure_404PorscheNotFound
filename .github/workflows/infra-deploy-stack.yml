@@ -1,0 +1,71 @@
+name: Infra / Deploy one stack (reusable)
+
+# Called by infra-deploy.yml, once per stack. Not started by itself.
+# The job runs in the given GitHub environment: with required reviewers set on it, the job
+# waits until someone approves it under "Review deployments".
+on:
+  workflow_call:
+    inputs:
+      stack-id:
+        description: CDK construct id of the stack, e.g. WebStack
+        required: true
+        type: string
+      environment:
+        description: GitHub environment that gates the deploy, e.g. stack-web
+        required: true
+        type: string
+      concurrency-group:
+        description: Concurrency group; defaults to one group per stack
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  id-token: write # needed to request the OIDC token for AWS
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  NODE_VERSION: '22'
+
+jobs:
+  deploy:
+    name: cdk deploy ${{ inputs.stack-id }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    # Two runs never deploy the same stack at the same time.
+    concurrency:
+      group: ${{ inputs.concurrency-group || format('infra-stack-{0}', inputs.stack-id) }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: infrastructure
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup-cdk
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: AWS login
+        uses: ./.github/actions/aws-login
+        with:
+          role-arn: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+
+      - name: Deploy ${{ inputs.stack-id }}
+        env:
+          STACK_ID: ${{ inputs.stack-id }}
+        # --exclusively: only this stack, never the stacks it depends on.
+        run: npx cdk deploy "$STACK_ID" --exclusively --require-approval never --outputs-file cdk-outputs.json
+
+      - name: Stack outputs
+        env:
+          STACK_ID: ${{ inputs.stack-id }}
+        run: |
+          {
+            echo "## $STACK_ID outputs"
+            echo '```json'
+            cat cdk-outputs.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -10,7 +10,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import boto3  # noqa: E402
 from boto3.dynamodb.types import TypeDeserializer  # noqa: E402
 
-from handlers import presence, rules  # noqa: E402
+from functions.presence import handler as presence  # noqa: E402
+from functions.presence import rules as presence_rules  # noqa: E402
 
 T0 = datetime(2026, 11, 21, 10, 0, 0, tzinfo=timezone.utc)  # last contact
 SEEN = "2026-11-21T10:00:00Z"
@@ -107,7 +108,7 @@ def run(db, now):
 
 class NextPresenceRuleTests(unittest.TestCase):
     def action(self, item, seconds):
-        decision = rules.next_presence(item, at(seconds))
+        decision = presence_rules.next_presence(item, at(seconds))
         return decision and decision["action"]
 
     def test_suspect_boundary(self):
@@ -127,13 +128,13 @@ class NextPresenceRuleTests(unittest.TestCase):
         self.assertEqual(self.action(device(offlineAlertSentAt="2026-11-21T09:00:00Z"), 5), "recovered")
 
     def test_item_without_last_seen_is_skipped(self):
-        self.assertIsNone(rules.next_presence({"deviceId": "d1"}, at(9999)))
+        self.assertIsNone(presence_rules.next_presence({"deviceId": "d1"}, at(9999)))
 
     def test_cause_battery_uses_last_call_position(self):
         item = device(lastCallType="battery", lastCallAt="2026-11-21T09:59:58Z",
                       lastKnownLocation=CALL_LOC, lastKnownHeading={"degrees": 90, "speedMps": 0})
-        alert = rules.next_presence(item, at(270))["alert"]
-        self.assertEqual(alert["alertReason"], rules.REASON_BATTERY)
+        alert = presence_rules.next_presence(item, at(270))["alert"]
+        self.assertEqual(alert["alertReason"], presence_rules.REASON_BATTERY)
         self.assertEqual(alert["lastCallType"], "battery")
         self.assertEqual(alert["location"], CALL_LOC)
         self.assertEqual(alert["heading"]["degrees"], 90)
@@ -142,22 +143,22 @@ class NextPresenceRuleTests(unittest.TestCase):
 
     def test_cause_connectivity(self):
         item = device(lastCallType="connectivity", lastCallAt="2026-11-21T09:59:58Z", lastKnownLocation=CALL_LOC)
-        self.assertEqual(rules.next_presence(item, at(270))["alert"]["alertReason"], rules.REASON_CONNECTIVITY)
+        self.assertEqual(presence_rules.next_presence(item, at(270))["alert"]["alertReason"], presence_rules.REASON_CONNECTIVITY)
 
     def test_stale_last_call_is_cause_unknown_with_newest_position(self):
         # Battery last call at 09:00, but the phone kept sending until 09:59:58.
         item = device(lastCallType="battery", lastCallAt="2026-11-21T09:00:00Z", lastKnownLocation=CALL_LOC)
-        alert = rules.next_presence(item, at(270))["alert"]
-        self.assertEqual(alert["alertReason"], rules.REASON_UNKNOWN)
+        alert = presence_rules.next_presence(item, at(270))["alert"]
+        self.assertEqual(alert["alertReason"], presence_rules.REASON_UNKNOWN)
         self.assertIsNone(alert["lastCallType"])
         self.assertEqual(alert["location"], LOC)
 
     def test_no_last_call_is_cause_unknown(self):
-        self.assertEqual(rules.next_presence(device(), at(270))["alert"]["alertReason"], rules.REASON_UNKNOWN)
+        self.assertEqual(presence_rules.next_presence(device(), at(270))["alert"]["alertReason"], presence_rules.REASON_UNKNOWN)
 
     def test_offline_alert_has_no_battery_level(self):
         # Alert rows store battery as a ratio; the latest item has percent, so it is left out.
-        self.assertNotIn("batteryLevel", rules.next_presence(device(batteryLevel=9.0), at(270))["alert"])
+        self.assertNotIn("batteryLevel", presence_rules.next_presence(device(batteryLevel=9.0), at(270))["alert"])
 
 
 class SweepTests(unittest.TestCase):

@@ -1,0 +1,19 @@
+name: Set up CDK
+description: Installs Node and the infrastructure/ npm dependencies (cached). Run actions/checkout first.
+inputs:
+  node-version:
+    description: Node.js version
+    default: '22'
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v5
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+        cache-dependency-path: infrastructure/package-lock.json
+
+    - name: npm ci
+      shell: bash
+      working-directory: infrastructure
+      run: npm ci

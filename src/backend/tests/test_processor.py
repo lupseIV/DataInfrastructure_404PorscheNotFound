@@ -7,7 +7,8 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from handlers import processor, rules  # noqa: E402
+from functions.processor import handler as processor  # noqa: E402
+from functions.processor import snapshot  # noqa: E402
 
 TS1 = "2026-11-21T10:00:00Z"
 TS2 = "2026-11-21T10:00:05Z"
@@ -69,17 +70,17 @@ def batch(ts=TS1, signal=None):
 
 class SignalSnapshotTests(unittest.TestCase):
     def test_signal_is_stored(self):
-        snap = rules.build_snapshot("d1", TS1, batch(signal={"level": 3, "dbm": -87, "networkType": "cellular"}), None)
+        snap = snapshot.build_snapshot("d1", TS1, batch(signal={"level": 3, "dbm": -87, "networkType": "cellular"}), None)
         self.assertEqual(snap["signal"], {"level": 3, "dbm": -87, "networkType": "cellular"})
 
     def test_signal_without_dbm(self):
-        snap = rules.build_snapshot("d1", TS1, batch(signal={"level": 2, "networkType": "wifi"}), None)
+        snap = snapshot.build_snapshot("d1", TS1, batch(signal={"level": 2, "networkType": "wifi"}), None)
         self.assertEqual(snap["signal"], {"level": 2, "networkType": "wifi"})
 
     def test_no_signal_reading_is_null_then_carried_forward(self):
-        self.assertIsNone(rules.build_snapshot("d1", TS1, batch(), None)["signal"])
-        first = rules.build_snapshot("d1", TS1, batch(signal={"level": 3, "networkType": "cellular"}), None)
-        second = rules.build_snapshot("d1", TS2, batch(TS2), first)
+        self.assertIsNone(snapshot.build_snapshot("d1", TS1, batch(), None)["signal"])
+        first = snapshot.build_snapshot("d1", TS1, batch(signal={"level": 3, "networkType": "cellular"}), None)
+        second = snapshot.build_snapshot("d1", TS2, batch(TS2), first)
         self.assertEqual(second["signal"], {"level": 3, "networkType": "cellular"})
 
 

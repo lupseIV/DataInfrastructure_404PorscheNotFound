@@ -15,7 +15,8 @@ Thresholds: SUSPECT_AFTER_SECONDS (default 60) and OFFLINE_GRACE_SECONDS (defaul
 import os
 from datetime import datetime, timezone
 
-from .event_common import ALERT_TTL_SECONDS, to_dynamo
+from .dynamo import ALERT_TTL_SECONDS, to_dynamo
+
 from .rules import OFFLINE_GRACE_SECONDS, SUSPECT_AFTER_SECONDS, next_presence
 
 _ddb = None

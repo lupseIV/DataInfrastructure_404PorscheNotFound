@@ -6,14 +6,16 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from handlers import (  # noqa: E402
-    battery as battery_lambda,
-    connectivity as connectivity_lambda,
-    event_common,
-    event_validation,
-    processor,
-    validation,
-)
+from functions.battery import handler as battery_lambda  # noqa: E402
+from functions.connectivity import handler as connectivity_lambda  # noqa: E402
+from functions.processor import handler as processor  # noqa: E402
+from functions.battery import validation as battery_validation  # noqa: E402
+from functions.connectivity import validation as connectivity_validation  # noqa: E402
+from functions.battery import checks as battery_checks, events as battery_events  # noqa: E402
+from functions.connectivity import checks as connectivity_checks, events as connectivity_events  # noqa: E402
+
+# Each Lambda bundles its own copy of the helper modules, so each has its own ValidationError.
+VALIDATION_ERRORS = (battery_checks.ValidationError, connectivity_checks.ValidationError)
 
 TS = "2026-11-20T18:41:10Z"
 LOC = {"lat": 48.1391, "lon": 11.5702, "accuracyM": 8.0, "capturedAt": "2026-11-20T18:41:08Z"}
@@ -42,83 +44,83 @@ def connectivity(level=0, previous=3, **extra):
 
 class ValidatorTests(unittest.TestCase):
     def rejects(self, fn, body):
-        with self.assertRaises(validation.ValidationError):
+        with self.assertRaises(VALIDATION_ERRORS):
             fn(body)
 
     def test_battery_thresholds(self):
-        event_validation.validate_battery_low(battery(0.20))
-        self.rejects(event_validation.validate_battery_low, battery(0.21))
-        event_validation.validate_battery_last_call(battery(0.10))
-        self.rejects(event_validation.validate_battery_last_call, battery(0.11))
+        battery_validation.validate_battery_low(battery(0.20))
+        self.rejects(battery_validation.validate_battery_low, battery(0.21))
+        battery_validation.validate_battery_last_call(battery(0.10))
+        self.rejects(battery_validation.validate_battery_last_call, battery(0.11))
 
     def test_battery_event_must_not_be_charging(self):
-        self.rejects(event_validation.validate_battery_low, battery(isCharging=True))
+        self.rejects(battery_validation.validate_battery_low, battery(isCharging=True))
 
     def test_battery_last_call_requires_last_known_location(self):
         body = battery()
         del body["lastKnownLocation"]
-        self.rejects(event_validation.validate_battery_last_call, body)
-        event_validation.validate_battery_low(body)  # D1 only needs location or lastKnownLocation
+        self.rejects(battery_validation.validate_battery_last_call, body)
+        battery_validation.validate_battery_low(body)  # D1 only needs location or lastKnownLocation
 
     def test_location_or_last_known_required(self):
         body = battery()
         body["location"] = None
-        event_validation.validate_battery_low(body)  # lastKnownLocation is enough
+        battery_validation.validate_battery_low(body)  # lastKnownLocation is enough
         del body["lastKnownLocation"]
-        self.rejects(event_validation.validate_battery_low, body)
+        self.rejects(battery_validation.validate_battery_low, body)
 
     def test_heading_is_optional_but_validated_when_present(self):
         body = battery()
         body["heading"] = None
-        event_validation.validate_battery_low(body)
+        battery_validation.validate_battery_low(body)
         del body["heading"]
-        event_validation.validate_battery_last_call(body)
-        self.rejects(event_validation.validate_battery_low, battery(heading={"degrees": 400, "speedMps": 1}))
-        self.rejects(event_validation.validate_battery_low, battery(heading="north"))
+        battery_validation.validate_battery_last_call(body)
+        self.rejects(battery_validation.validate_battery_low, battery(heading={"degrees": 400, "speedMps": 1}))
+        self.rejects(battery_validation.validate_battery_low, battery(heading="north"))
 
     def test_bad_coordinates_and_timestamp(self):
-        self.rejects(event_validation.validate_battery_low, battery(location=dict(LOC, lat=95)))
-        self.rejects(event_validation.validate_battery_low, battery(timestamp="2026-11-20 18:41"))
+        self.rejects(battery_validation.validate_battery_low, battery(location=dict(LOC, lat=95)))
+        self.rejects(battery_validation.validate_battery_low, battery(timestamp="2026-11-20 18:41"))
 
     def test_degraded_needs_two_bar_drop(self):
-        event_validation.validate_connectivity_degraded(connectivity(level=1, previous=3))
-        self.rejects(event_validation.validate_connectivity_degraded, connectivity(level=2, previous=3))
-        self.rejects(event_validation.validate_connectivity_degraded, connectivity(level=1, previous=3, windowSeconds=61))
+        connectivity_validation.validate_connectivity_degraded(connectivity(level=1, previous=3))
+        self.rejects(connectivity_validation.validate_connectivity_degraded, connectivity(level=2, previous=3))
+        self.rejects(connectivity_validation.validate_connectivity_degraded, connectivity(level=1, previous=3, windowSeconds=61))
 
     def test_degraded_accepts_dbm_drop_with_previous_dbm(self):
         # 3 -> 2 bars is only 1 bar, but -85 -> -102 is a 17 dBm drop.
-        event_validation.validate_connectivity_degraded(
+        connectivity_validation.validate_connectivity_degraded(
             connectivity(level=2, previous=3, signalDbm=-102, previousSignalDbm=-85))
         # Exactly at the threshold counts.
-        event_validation.validate_connectivity_degraded(
+        connectivity_validation.validate_connectivity_degraded(
             connectivity(level=2, previous=3, signalDbm=-100, previousSignalDbm=-85))
 
     def test_degraded_rejects_drop_under_both_thresholds(self):
-        self.rejects(event_validation.validate_connectivity_degraded,
+        self.rejects(connectivity_validation.validate_connectivity_degraded,
                      connectivity(level=2, previous=3, signalDbm=-95, previousSignalDbm=-85))
 
     def test_degraded_dbm_drop_needs_previous_dbm(self):
         # Without previousSignalDbm the server cannot see a dBm drop: only the bar rule applies.
-        self.rejects(event_validation.validate_connectivity_degraded,
+        self.rejects(connectivity_validation.validate_connectivity_degraded,
                      connectivity(level=2, previous=3, signalDbm=-102))
         # previousSignalDbm without signalDbm cannot prove a drop either.
-        self.rejects(event_validation.validate_connectivity_degraded,
+        self.rejects(connectivity_validation.validate_connectivity_degraded,
                      connectivity(level=2, previous=3, previousSignalDbm=-85))
 
     def test_degraded_previous_dbm_must_be_a_number(self):
-        self.rejects(event_validation.validate_connectivity_degraded,
+        self.rejects(connectivity_validation.validate_connectivity_degraded,
                      connectivity(level=1, previous=3, signalDbm=-102, previousSignalDbm="-85"))
 
     def test_degraded_dbm_threshold_from_env(self):
         body = connectivity(level=2, previous=3, signalDbm=-102, previousSignalDbm=-85)
         with mock.patch.dict(os.environ, {"SIGNAL_DROP_DBM": "20"}):
-            self.rejects(event_validation.validate_connectivity_degraded, body)
+            self.rejects(connectivity_validation.validate_connectivity_degraded, body)
 
     def test_last_call_needs_lost_signal(self):
-        event_validation.validate_connectivity_last_call(connectivity(level=0, previous=1))
-        event_validation.validate_connectivity_last_call(connectivity(level=1, previous=2, signalDbm=-115))
-        self.rejects(event_validation.validate_connectivity_last_call, connectivity(level=1, previous=2, signalDbm=-100))
-        self.rejects(event_validation.validate_connectivity_last_call, connectivity(level=2, previous=3))
+        connectivity_validation.validate_connectivity_last_call(connectivity(level=0, previous=1))
+        connectivity_validation.validate_connectivity_last_call(connectivity(level=1, previous=2, signalDbm=-115))
+        self.rejects(connectivity_validation.validate_connectivity_last_call, connectivity(level=1, previous=2, signalDbm=-100))
+        self.rejects(connectivity_validation.validate_connectivity_last_call, connectivity(level=2, previous=3))
 
 
 class FakeTable:
@@ -145,9 +147,10 @@ class FakeTable:
 class HandlerTests(unittest.TestCase):
     def setUp(self):
         self.alerts, self.latest = FakeTable(), FakeTable()
-        patcher = mock.patch.object(event_common, "_tables", return_value=(self.alerts, self.latest))
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for events_module in (battery_events, connectivity_events):
+            patcher = mock.patch.object(events_module, "_tables", return_value=(self.alerts, self.latest))
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def call(self, route, body, raw=None):
         """route: the API Gateway path segment; it picks the Lambda and the event inside it."""
