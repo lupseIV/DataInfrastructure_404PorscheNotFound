@@ -22,6 +22,12 @@ function hash01(text: string, seed: number): number {
     h ^= text.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
+  // Final mixing, so IDs that differ only in the last character land far apart.
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
   return (h >>> 0) / 4294967296;
 }
 

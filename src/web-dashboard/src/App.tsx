@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { getDevices } from "./api";
 import { DeviceSidebar, type DeviceRow } from "./components/DeviceSidebar";
+import { FleetMap } from "./components/FleetMap";
 import { Icon } from "./components/Icon";
 import { StatusFilterBar } from "./components/StatusFilterBar";
 import { TopBar } from "./components/TopBar";
@@ -41,6 +42,8 @@ export default function App() {
     return q ? filteredRows.filter((r) => r.device.deviceId.toLowerCase().includes(q)) : filteredRows;
   }, [filteredRows, search]);
 
+  const selectedDevice = rows.find((r) => r.device.deviceId === selectedId)?.device ?? null;
+
   const selectDevice = (deviceId: string) => {
     setSelectedId(deviceId);
     setMobileSidebarOpen(false);
@@ -78,6 +81,15 @@ export default function App() {
           <StatusFilterBar counts={counts} active={statusFilter} onChange={setStatusFilter} />
 
           <div className="flex-1 min-h-0 relative">
+            <FleetMap
+              rows={filteredRows}
+              selectedDevice={selectedDevice}
+              onSelect={selectDevice}
+              center={config.mapCenter}
+              zoom={config.mapZoom}
+              loading={devicesPoll.loading}
+              filtered={statusFilter !== null && rows.length > 0}
+            />
             {sidebarCollapsed && (
               <button
                 type="button"

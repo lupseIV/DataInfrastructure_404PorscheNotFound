@@ -23,6 +23,11 @@ export interface AppConfig {
   /** Map center [latitude, longitude] and zoom when the app opens. */
   mapCenter: [number, number];
   mapZoom: number;
+  /** Map tile server (Leaflet URL template) and its required attribution. */
+  mapTileUrl: string;
+  mapTileAttribution: string;
+  /** Darken light map tiles with a CSS filter so they match the dark theme. */
+  mapDarkFilter: boolean;
 }
 
 type ConfigOverrides = { [K in keyof AppConfig]?: AppConfig[K] | null };
@@ -52,6 +57,11 @@ export const config: AppConfig = {
   historyLimit: 50,
   mapCenter: [46.7712, 23.6236], // Cluj-Napoca
   mapZoom: 13,
+  // OpenStreetMap tiles need no API key; see their tile usage policy for heavy use.
+  mapTileUrl: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  mapTileAttribution:
+    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  mapDarkFilter: true,
 };
 
 /** Where the runtime config was read from, shown in the UI for debugging. */
@@ -85,6 +95,12 @@ function applyOverrides(o: ConfigOverrides) {
   if (isPositiveNumber(o.historyLimit)) config.historyLimit = Math.round(o.historyLimit);
   if (isLatLng(o.mapCenter)) config.mapCenter = o.mapCenter;
   if (isPositiveNumber(o.mapZoom)) config.mapZoom = o.mapZoom;
+  if (typeof o.mapTileUrl === "string" && o.mapTileUrl.trim() !== "") {
+    config.mapTileUrl = o.mapTileUrl.trim();
+    if (typeof o.mapTileAttribution === "string") config.mapTileAttribution = o.mapTileAttribution;
+  }
+  const dark = parseBool(o.mapDarkFilter);
+  if (dark !== undefined) config.mapDarkFilter = dark;
 }
 
 /** Reads public/config.json (if present) and applies it over the build-time values. */

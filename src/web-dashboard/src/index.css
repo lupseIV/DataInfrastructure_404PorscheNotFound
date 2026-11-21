@@ -87,6 +87,11 @@
   font-family: var(--font-sans);
 }
 
+/* Turns light OpenStreetMap tiles into a dark navy map that matches the design. */
+.leaflet-layer.dark-tiles {
+  filter: invert(1) hue-rotate(195deg) brightness(0.72) contrast(1.15) saturate(0.45);
+}
+
 .leaflet-control-attribution {
   background: rgba(11, 19, 38, 0.8) !important;
   color: #64748b !important;
