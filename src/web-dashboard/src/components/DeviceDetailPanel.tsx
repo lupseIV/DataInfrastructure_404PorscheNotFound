@@ -11,13 +11,14 @@ import {
   formatUtc,
   parseTime,
 } from "../lib/format";
-import type { DeviceAlertsResult } from "../api";
+import type { DeviceAlertsResult, DevicePathResult } from "../api";
 import { hasGpsFix } from "../lib/location";
 import { LAST_CALL_LABELS, activeLastCall, formatSignal } from "../lib/signal";
 import { alertStyle, groupInfo, isSuspect, lastSeenOf, type StatusGroup } from "../lib/status";
 import type { Device, DeviceLocation, TelemetryRecord } from "../types";
 import { BatteryChart } from "./BatteryChart";
 import { DeviceEvents } from "./DeviceEvents";
+import { DeviceRoute } from "./DeviceRoute";
 import { HistoryTable } from "./HistoryTable";
 import { Icon } from "./Icon";
 import { SignalBars } from "./SignalBars";
@@ -34,6 +35,12 @@ interface DeviceDetailPanelProps {
   alertsError: string | null;
   /** Show a position on the map (event location or last known location). */
   onShowOnMap: (location: DeviceLocation, label: string) => void;
+  route: DevicePathResult | null;
+  routeLoading: boolean;
+  routeError: string | null;
+  routeMinutes: number;
+  onRouteMinutesChange: (minutes: number) => void;
+  onFitRoute: () => void;
   onClose: () => void;
 }
 
@@ -49,6 +56,12 @@ export function DeviceDetailPanel({
   alertsLoading,
   alertsError,
   onShowOnMap,
+  route,
+  routeLoading,
+  routeError,
+  routeMinutes,
+  onRouteMinutesChange,
+  onFitRoute,
   onClose,
 }: DeviceDetailPanelProps) {
   const g = groupInfo(group);
@@ -219,6 +232,24 @@ export function DeviceDetailPanel({
               </button>
             </div>
           )}
+        </Card>
+
+        {/* Route of the last N minutes, drawn on the map */}
+        <Card
+          icon="route"
+          iconClass="text-primary"
+          title="Route"
+          badge={route?.available && route.points.length > 0 ? `${routeMinutes} min` : undefined}
+          badgeClass="text-slate-400"
+        >
+          <DeviceRoute
+            route={route}
+            loading={routeLoading}
+            error={routeError}
+            minutes={routeMinutes}
+            onMinutesChange={onRouteMinutesChange}
+            onFit={onFitRoute}
+          />
         </Card>
 
         {/* Events from the alerts endpoint */}

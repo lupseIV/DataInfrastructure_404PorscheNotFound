@@ -125,3 +125,13 @@ export function eventDetails(record: AlertRecord): string {
   if (parts.length === 0 && record.alertReason) parts.push(record.alertReason);
   return parts.join(" · ");
 }
+
+/** Color of a signal level 0..4 (red: none, amber: weak, green: good). */
+export const SIGNAL_COLORS = ["#ef4444", "#f59e0b", "#f59e0b", "#10b981", "#10b981"] as const;
+/** Route color where the phone sent no signal reading (e.g. iOS). */
+export const NO_SIGNAL_DATA_COLOR = "#60a5fa";
+
+export function signalColor(level: number | null | undefined): string {
+  if (typeof level !== "number" || !Number.isFinite(level)) return NO_SIGNAL_DATA_COLOR;
+  return SIGNAL_COLORS[Math.max(0, Math.min(4, Math.round(level)))];
+}

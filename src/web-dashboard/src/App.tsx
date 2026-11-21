@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { getDeviceAlerts, getDeviceTelemetry, getDevices } from "./api";
+import { getDeviceAlerts, getDevicePath, getDeviceTelemetry, getDevices } from "./api";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { DeviceDetailPanel } from "./components/DeviceDetailPanel";
 import { DeviceSidebar, type DeviceRow } from "./components/DeviceSidebar";
@@ -23,6 +23,9 @@ export default function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   // Position highlighted on the map from the detail panel (event or last known position).
   const [mapFocus, setMapFocus] = useState<MapFocus | null>(null);
+  // Route window of the open device (Contract C #4 presets) and "frame the route" requests.
+  const [routeMinutes, setRouteMinutes] = useState(10);
+  const [fitRouteRequest, setFitRouteRequest] = useState(0);
 
   const rows: DeviceRow[] = useMemo(
     () =>
@@ -63,6 +66,13 @@ export default function App() {
     (signal) => getDeviceAlerts(selectedId!, config.historyLimit, signal),
     config.pollIntervalMs,
     selectedId,
+  );
+
+  // Route of the open device; a new window starts a new poll.
+  const routePoll = usePolling(
+    (signal) => getDevicePath(selectedId!, routeMinutes, signal),
+    config.pollIntervalMs,
+    selectedId ? `${selectedId}|${routeMinutes}` : null,
   );
 
   const selectDevice = (deviceId: string) => {
@@ -127,6 +137,8 @@ export default function App() {
               filtered={statusFilter !== null && rows.length > 0}
               loadFailed={loadFailed}
               focus={mapFocus}
+              path={selectedId && routePoll.data?.deviceId === selectedId ? routePoll.data.points : null}
+              fitPathRequest={fitRouteRequest}
             />
             {sidebarCollapsed && (
               <button
@@ -153,6 +165,15 @@ export default function App() {
             alertsLoading={alertsPoll.loading}
             alertsError={alertsPoll.error}
             onShowOnMap={(location, label) => setMapFocus({ lat: location.lat, lng: location.lon, label })}
+            route={routePoll.data}
+            routeLoading={routePoll.loading}
+            routeError={routePoll.error}
+            routeMinutes={routeMinutes}
+            onRouteMinutesChange={setRouteMinutes}
+            onFitRoute={() => {
+              setMapFocus(null);
+              setFitRouteRequest((n) => n + 1);
+            }}
             onClose={closeDetails}
           />
         )}

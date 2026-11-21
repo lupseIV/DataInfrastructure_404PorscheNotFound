@@ -3,8 +3,8 @@
 // which one it gets.
 
 import { config } from "./config";
-import { getMockAlerts, getMockDevices, getMockTelemetry } from "./mock/mockData";
-import type { Device, DeviceAlerts, DeviceTelemetry } from "./types";
+import { getMockAlerts, getMockDevices, getMockPath, getMockTelemetry } from "./mock/mockData";
+import type { Device, DeviceAlerts, DevicePath, DeviceTelemetry } from "./types";
 
 export class ApiError extends Error {
   /** HTTP status, or null for network/configuration errors. */
@@ -110,6 +110,47 @@ export async function getDeviceAlerts(
   } catch (err) {
     if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
       return { deviceId, records: [], available: false };
+    }
+    throw err;
+  }
+}
+
+/** Route presets offered by the dashboard (Contract C #4). */
+export const PATH_MINUTES = [5, 10, 20, 30, 60] as const;
+
+/** Path of one device, plus whether the endpoint exists on this backend. */
+export interface DevicePathResult extends DevicePath {
+  /** false while the backend has no path route yet (API Gateway answers 403 or 404). */
+  available: boolean;
+}
+
+/**
+ * GET /api/devices/{deviceId}/path?minutes=N — the route of the last N minutes of the
+ * device's data, oldest first. The cloud picks the points; the dashboard only draws them.
+ */
+export async function getDevicePath(
+  deviceId: string,
+  minutes: number,
+  signal?: AbortSignal,
+): Promise<DevicePathResult> {
+  if (config.useMockData) {
+    await wait(MOCK_DELAY_MS);
+    return { ...getMockPath(deviceId, minutes), available: true };
+  }
+  const path = `/api/devices/${encodeURIComponent(deviceId)}/path?minutes=${minutes}`;
+  try {
+    const result = await getJson<DevicePath>(path, signal);
+    if (!result || !Array.isArray(result.points) || !result.summary) {
+      throw new ApiError("Unexpected response from the path endpoint");
+    }
+    return { ...result, available: true };
+  } catch (err) {
+    if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
+      return {
+        deviceId, minutes, from: null, to: null, points: [],
+        summary: { pointCount: 0, distanceM: 0, durationSeconds: 0, maxSpeedMps: null },
+        available: false,
+      };
     }
     throw err;
   }
