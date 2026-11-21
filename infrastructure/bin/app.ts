@@ -31,6 +31,7 @@ new GithubDeployRoleStack(app, 'GithubDeployRoleStack', {
   },
   projectName,
   githubRepo: app.node.tryGetContext('githubRepo'),
+  githubImmutableSubjectPrefix: app.node.tryGetContext('githubImmutableSubjectPrefix'),
   existingOidcProviderArn: app.node.tryGetContext('githubOidcProviderArn'),
 });
 
