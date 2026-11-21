@@ -14,12 +14,16 @@ class TelemetryEvent {
     required this.timestamp,
   });
 
+  /// Top-level schema version so the app and backend can evolve independently.
+  static const schemaVersion = 1;
+
   Map<String, Object> toJson() => {
         'deviceId': deviceId,
         'eventType': eventType,
         'value': value,
         'unit': unit,
         'timestamp': timestamp,
+        'schemaVersion': schemaVersion,
       };
 
   /// "2026-11-20T18:30:00Z" (second precision, UTC, trailing Z).
@@ -53,6 +57,28 @@ class TelemetryEvent {
         eventType: 'acceleration',
         value: {'x': x, 'y': y, 'z': z},
         unit: 'm/s2',
+        timestamp: ts,
+      );
+
+  /// Raw GPS fix: value = { lat, lon, accuracyM, altitudeM? }. Contract A.
+  static TelemetryEvent location(
+          String deviceId, Map<String, Object> value, String ts) =>
+      TelemetryEvent(
+        deviceId: deviceId,
+        eventType: 'location',
+        value: value,
+        unit: 'deg',
+        timestamp: ts,
+      );
+
+  /// Raw GPS course/speed: value = { degrees, speedMps }. Contract A.
+  static TelemetryEvent motionHeading(
+          String deviceId, Map<String, Object> value, String ts) =>
+      TelemetryEvent(
+        deviceId: deviceId,
+        eventType: 'motion_heading',
+        value: value,
+        unit: 'deg',
         timestamp: ts,
       );
 }

@@ -25,8 +25,12 @@ def is_num(v):
 def validate(ev, i):
     if not isinstance(ev, dict):
         return f"[{i}] event must be an object"
-    if set(ev) != FIELDS:
-        return f"[{i}] fields must be exactly {sorted(FIELDS)}, got {sorted(ev)}"
+    missing = FIELDS - set(ev)
+    extra = set(ev) - FIELDS - {"schemaVersion"}  # schemaVersion is optional
+    if missing or extra:
+        return f"[{i}] fields must be {sorted(FIELDS)} (+optional schemaVersion), got {sorted(ev)}"
+    if "schemaVersion" in ev and not isinstance(ev["schemaVersion"], int):
+        return f"[{i}] schemaVersion must be an integer"
     if not isinstance(ev["deviceId"], str) or not ev["deviceId"]:
         return f"[{i}] deviceId must be a non-empty string"
     if not isinstance(ev["timestamp"], str) or not TS_RE.match(ev["timestamp"]):
@@ -42,6 +46,19 @@ def validate(ev, i):
         if (not isinstance(v, dict) or set(v) != {"x", "y", "z"}
                 or not all(is_num(v[k]) for k in "xyz") or u != "m/s2"):
             return f"[{i}] acceleration needs {{x,y,z}} numbers and unit 'm/s2'"
+    elif t == "location":
+        if (not isinstance(v, dict) or not {"lat", "lon", "accuracyM"} <= set(v)
+                or set(v) - {"lat", "lon", "accuracyM", "altitudeM"}
+                or not is_num(v["lat"]) or not -90 <= v["lat"] <= 90
+                or not is_num(v["lon"]) or not -180 <= v["lon"] <= 180
+                or not is_num(v["accuracyM"]) or v["accuracyM"] < 0
+                or ("altitudeM" in v and not is_num(v["altitudeM"])) or u != "deg"):
+            return f"[{i}] location needs {{lat(-90..90),lon(-180..180),accuracyM>=0,altitudeM?}} and unit 'deg'"
+    elif t == "motion_heading":
+        if (not isinstance(v, dict) or set(v) != {"degrees", "speedMps"}
+                or not is_num(v["degrees"]) or not 0 <= v["degrees"] <= 360
+                or not is_num(v["speedMps"]) or v["speedMps"] < 0 or u != "deg"):
+            return f"[{i}] motion_heading needs {{degrees(0..360),speedMps>=0}} and unit 'deg'"
     else:
         return f"[{i}] unknown eventType '{t}'"
     return None
@@ -76,6 +93,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "Validation failed", "details": err})
         for ev in events:
             print(ev["timestamp"], ev["deviceId"], ev["eventType"], ev["value"])
+            if ev["eventType"] == "location":
+                v = ev["value"]
+                print(f"    -> https://www.google.com/maps?q={v['lat']},{v['lon']}"
+                      f"  (±{v['accuracyM']} m)")
         self._send(202, {"accepted": len(events), "deviceId": events[0]["deviceId"]})
 
     def log_message(self, *_):
