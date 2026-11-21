@@ -8,6 +8,14 @@ export interface GithubDeployRoleStackProps extends cdk.StackProps {
   readonly projectName: string;
   /** GitHub repository allowed to deploy, as "owner/name". */
   readonly githubRepo: string;
+  /**
+   * Subject prefix GitHub uses when the repository has "immutable subject" enabled:
+   * owner and repo carry their numeric ids, e.g. "repo:owner@123/name@456".
+   * Check it with GET /repos/{owner}/{repo}/actions/oidc/customization/sub (sub_claim_prefix).
+   * Both this and the plain "repo:owner/name" form are accepted.
+   * @default - only the plain form is accepted
+   */
+  readonly githubImmutableSubjectPrefix?: string;
   /** Branch allowed to deploy. @default 'main' */
   readonly deployBranch?: string;
   /**
@@ -43,6 +51,13 @@ export class GithubDeployRoleStack extends cdk.Stack {
       }).oidcProviderArn;
 
     const branch = props.deployBranch ?? 'main';
+    // A list in StringEquals matches if the token's subject equals any of the values.
+    const allowedSubjects = [
+      `repo:${props.githubRepo}:ref:refs/heads/${branch}`,
+      ...(props.githubImmutableSubjectPrefix
+        ? [`${props.githubImmutableSubjectPrefix}:ref:refs/heads/${branch}`]
+        : []),
+    ];
 
     this.role = new iam.Role(this, 'DeployRole', {
       roleName: `${props.projectName}-github-deploy`,
@@ -51,7 +66,7 @@ export class GithubDeployRoleStack extends cdk.Stack {
       assumedBy: new iam.WebIdentityPrincipal(providerArn, {
         StringEquals: {
           [`${issuer}:aud`]: 'sts.amazonaws.com',
-          [`${issuer}:sub`]: `repo:${props.githubRepo}:ref:refs/heads/${branch}`,
+          [`${issuer}:sub`]: allowedSubjects,
         },
       }),
     });
