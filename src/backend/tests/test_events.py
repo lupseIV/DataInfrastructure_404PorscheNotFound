@@ -102,6 +102,10 @@ class FakeTable:
         self.put.append(Item)
 
     def update_item(self, **kwargs):
+        # Like DynamoDB: an update expression may not touch a key attribute.
+        touched = set(kwargs.get("ExpressionAttributeNames", {}).values())
+        if touched & set(kwargs["Key"]):
+            raise ValueError(f"Cannot update key attribute(s) {touched & set(kwargs['Key'])}")
         if self.fail_condition and "ConditionExpression" in kwargs:
             ex = Exception("conditional check failed")
             ex.response = {"Error": {"Code": "ConditionalCheckFailedException"}}
@@ -204,7 +208,10 @@ class ProcessorPreservesEventFieldsTests(unittest.TestCase):
         processor.put_latest(latest, snap)
         self.assertEqual(len(latest.updates), 1)
         self.assertEqual(latest.put, [])
-        self.assertEqual(set(latest.updates[0]["ExpressionAttributeNames"].values()), set(snap))
+        update = latest.updates[0]
+        self.assertEqual(update["Key"], {"deviceId": "d1"})
+        # Every field except the key is written; the key itself must stay out of the SET.
+        self.assertEqual(set(update["ExpressionAttributeNames"].values()), set(snap) - {"deviceId"})
 
 
 if __name__ == "__main__":

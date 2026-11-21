@@ -26,12 +26,14 @@ def put_latest(latest_table, snap):
 
     The event Lambdas keep their own fields on the same item (lastSeenAt, lastKnownLocation,
     lastCallType, ...); a full put_item would erase them.
+    The key (deviceId) goes in Key only: DynamoDB rejects an update expression that sets it.
     """
-    names = {f"#f{i}": k for i, k in enumerate(snap)}
-    values = {f":f{i}": v for i, v in enumerate(snap.values())}
+    fields = {k: v for k, v in snap.items() if k != "deviceId"}
+    names = {f"#f{i}": k for i, k in enumerate(fields)}
+    values = {f":f{i}": v for i, v in enumerate(fields.values())}
     latest_table.update_item(
         Key={"deviceId": snap["deviceId"]},
-        UpdateExpression="SET " + ", ".join(f"#f{i} = :f{i}" for i in range(len(snap))),
+        UpdateExpression="SET " + ", ".join(f"#f{i} = :f{i}" for i in range(len(fields))),
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=to_dynamo(values),
     )
