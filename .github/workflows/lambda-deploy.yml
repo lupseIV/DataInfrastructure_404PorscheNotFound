@@ -21,7 +21,9 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
   PROJECT_NAME: fleet-telemetry
   PYTHON_VERSION: '3.13'
-  FUNCTIONS: ingest processor query battery connectivity
+  # presence before query: if presence does not exist yet (infra not deployed), the loop stops
+  # before query, so the query code that exposes presenceState never goes live without it.
+  FUNCTIONS: ingest processor presence query battery connectivity
 
 jobs:
   check:

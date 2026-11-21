@@ -1,6 +1,8 @@
 import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -55,8 +57,14 @@ const BATTERY_THRESHOLDS: Record<string, string> = {
 };
 const CONNECTIVITY_THRESHOLDS: Record<string, string> = {
   SIGNAL_DROP_BARS: '2',
+  SIGNAL_DROP_DBM: '15',
   SIGNAL_DROP_WINDOW_SECONDS: '60',
   SIGNAL_LOST_DBM: '-110',
+};
+/** Contract F timers; the values match the defaults in src/backend/handlers/rules.py. */
+const PRESENCE_SETTINGS: Record<string, string> = {
+  SUSPECT_AFTER_SECONDS: '60',
+  OFFLINE_GRACE_SECONDS: '240',
 };
 
 /**
@@ -64,7 +72,8 @@ const CONNECTIVITY_THRESHOLDS: Record<string, string> = {
  *
  * - ingest:    POST /api/telemetry -> SQS FIFO queue
  * - processor: SQS FIFO queue -> DynamoDB snapshots
- * - query:     GET /api/devices and GET /api/devices/{deviceId}/telemetry
+ * - query:     GET /api/devices, /api/devices/{deviceId}/telemetry and /api/devices/{deviceId}/alerts
+ * - presence:  EventBridge every minute -> marks silent devices SUSPECT / OFFLINE (Contract F)
  *
  * Event Lambdas (Contracts D1 to E2): one function per family, each serving two routes and
  * choosing the event from the request path. Both write to the alerts and latest tables.
@@ -77,6 +86,7 @@ export class TelemetryFunctions extends Construct {
   public readonly queryFunction: lambda.Function;
   public readonly batteryFunction: lambda.Function;
   public readonly connectivityFunction: lambda.Function;
+  public readonly presenceFunction: lambda.Function;
 
   constructor(scope: Construct, id: string, props: TelemetryFunctionsProps) {
     super(scope, id);
@@ -134,10 +144,12 @@ export class TelemetryFunctions extends Construct {
 
     this.queryFunction = createFunction('query', 'handlers.query.handler', cdk.Duration.seconds(10), {
       ...tableEnv,
+      ALERTS_TABLE: props.tables.alertsTable.tableName,
       ALLOWED_ORIGIN: props.allowedOrigin,
     });
     props.tables.snapshotsTable.grantReadData(this.queryFunction);
     props.tables.latestTable.grantReadData(this.queryFunction);
+    props.tables.alertsTable.grantReadData(this.queryFunction); // GET .../alerts
 
     // Event Lambdas (Contracts D1 to E2): each writes an alert row and updates the device's
     // latest item, so they only need write access to the two tables.
@@ -159,5 +171,24 @@ export class TelemetryFunctions extends Construct {
       'handlers.connectivity.handler',
       CONNECTIVITY_THRESHOLDS,
     );
+
+    // Presence (Contract F): scans the latest table every minute and writes presenceState
+    // plus presence_offline / presence_recovered rows. Its writes are conditional, so two
+    // overlapping runs are harmless and no reserved concurrency is needed.
+    this.presenceFunction = createFunction('presence', 'handlers.presence.handler', cdk.Duration.seconds(30), {
+      LATEST_TABLE: props.tables.latestTable.tableName,
+      ALERTS_TABLE: props.tables.alertsTable.tableName,
+      ...PRESENCE_SETTINGS,
+    });
+    props.tables.latestTable.grantReadWriteData(this.presenceFunction); // Scan + conditional UpdateItem
+    props.tables.alertsTable.grantWriteData(this.presenceFunction); // PutItem (inside the transaction)
+    // Never retry a failed sweep: the next one starts a minute later anyway.
+    this.presenceFunction.configureAsyncInvoke({ retryAttempts: 0, maxEventAge: cdk.Duration.minutes(1) });
+
+    new events.Rule(this, 'PresenceSchedule', {
+      description: 'Runs the presence sweep that marks silent devices SUSPECT / OFFLINE',
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+      targets: [new targets.LambdaFunction(this.presenceFunction, { retryAttempts: 0 })],
+    });
   }
 }

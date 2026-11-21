@@ -118,10 +118,11 @@ The cloud processor transforms raw telemetry into a consolidated health snapshot
   "location": { "lat": 48.1374, "lon": 11.5755, "accuracyM": 6.5, "capturedAt": "2026-11-20T18:30:00Z" },
   "heading": { "degrees": 274.0, "speedMps": 1.4 },
   "travelStatus": "walking",
-  "presenceState": "ONLINE",
-  "lastSeenAt": "2026-11-20T18:30:02Z"
+  "signal": { "level": 3, "dbm": -87, "networkType": "cellular" }
 }
 ```
+
+The same snapshot is written to the history table (with `expiresAt`, 7-day TTL) and merged into the device's item in the latest table. The latest item also carries the liveness and last-call fields below, which are not part of the history.
 
 * **Field Types:**
   * `alertStatus`: `"OK" | "WARNING" | "CRITICAL"`
@@ -130,8 +131,15 @@ The cloud processor transforms raw telemetry into a consolidated health snapshot
   * `location`: `object | null` (`{ lat, lon, accuracyM, capturedAt }`, `null` until the first fix arrives).
   * `heading`: `object | null` (`{ degrees, speedMps }`).
   * `travelStatus`: `"stationary" | "walking" | "in_vehicle" | "unknown"` (cloud-derived, see Contract A).
-  * `presenceState`: `"ONLINE" | "SUSPECT" | "OFFLINE"` (see Contract F).
-  * `lastSeenAt`: ISO-8601 UTC `string` (server receipt time of the last event), `null` for a device that never reported.
+  * `signal`: `object | null` (`{ level, dbm?, networkType }` from the last `signal_strength` event, carried forward when a batch has none; `null` until the first reading, and always on iOS).
+
+* **Latest-item only fields (Contract F and the last calls):**
+  * `presenceState`: `"ONLINE" | "SUSPECT" | "OFFLINE"`. Set to `ONLINE` by every accepted event, to `SUSPECT` / `OFFLINE` only by the presence sweep.
+  * `lastSeenAt`: ISO-8601 UTC `string`, server receipt time of the last contact (the SQS `SentTimestamp` for telemetry). Never moves backwards.
+  * `lastEventTimestamp`: device time of the newest data received. Never moves backwards.
+  * `lastCallType`: `"battery" | "connectivity" | null`; `lastCallAt`: device time of that last call.
+  * `lastKnownLocation`, `lastKnownHeading`: position and heading at the moment of the last call.
+  * `offlineAlertSentAt`: set while a `presence_offline` alert is open (internal, not returned by the API).
 
 ### Contract C: Cloud Query API $\rightarrow$ Web Dashboard
 
@@ -154,13 +162,18 @@ Returns the latest processed state for each active device.
     "location": { "lat": 48.1374, "lon": 11.5755, "accuracyM": 6.5, "capturedAt": "2026-11-20T18:30:00Z" },
     "heading": { "degrees": 274.0, "speedMps": 1.4 },
     "travelStatus": "walking",
+    "signal": { "level": 3, "dbm": -87, "networkType": "cellular" },
+    "lastCallType": "battery",
+    "lastCallAt": "2026-11-20T18:29:55Z",
+    "lastKnownLocation": { "lat": 48.1374, "lon": 11.5755, "accuracyM": 6.5, "capturedAt": "2026-11-20T18:29:53Z" },
+    "lastKnownHeading": { "degrees": 274.0, "speedMps": 1.4 },
     "presenceState": "ONLINE",
     "lastSeenAt": "2026-11-20T18:30:02Z"
   }
 ]
 ```
 
-The new fields have the same types as in Contract B. Existing consumers may ignore them.
+The fields have the types listed in Contract B; a field without a value is `null` (for example the last-call fields of a device that never sent one). When `presenceState` is `null` (a device that has not reported since liveness tracking started) the dashboard falls back to its own staleness check. Devices that only ever sent an event (no snapshot yet) are not listed. Existing consumers may ignore the new fields.
 
 #### 2. Get Device Historical Events (`GET /api/devices/{deviceId}/telemetry?limit=50`)
 
@@ -184,28 +197,62 @@ Returns historical snapshots ordered by `timestamp` descending (newest first).
 }
 ```
 
-#### 3. Get Device Alerts (`GET /api/devices/{deviceId}/alerts?limit=50`) — documented, not built yet
+Each record also carries `location`, `heading`, `travelStatus` and `signal` from the snapshot (same types as Contract B). `limit` defaults to 50 and is capped at 500; a non-positive or non-numeric `limit` returns `400 { "error": "limit must be a positive integer" }`.
 
-Returns the stored last-call and status events (Contracts D1 to E2) and presence alerts (Contract F), newest first.
+#### 3. Get Device Alerts (`GET /api/devices/{deviceId}/alerts?limit=50`)
+
+Returns the stored last-call and status events (Contracts D1 to E2) and presence alerts (Contract F), newest first. No API key is required (like the other `GET` routes). Rows are kept for 7 days.
 
 ```json
 {
   "deviceId": "fleet-phone-01",
   "records": [
     {
-      "timestamp": "2026-11-20T18:41:10Z",
+      "alertType": "presence_offline",
+      "timestamp": "2026-11-20T18:45:30Z",
+      "receivedAt": "2026-11-20T18:45:30Z",
+      "alertStatus": "CRITICAL",
+      "alertReason": "Silent after battery last call (likely battery dead)",
+      "lastSeenAt": "2026-11-20T18:41:11Z",
+      "silentSeconds": 259,
+      "lastCallType": "battery",
+      "location": { "lat": 48.1374, "lon": 11.5755, "accuracyM": 6.5, "capturedAt": "2026-11-20T18:41:08Z" },
+      "heading": { "degrees": 274.0, "speedMps": 12.3 }
+    },
+    {
       "alertType": "battery_last_call",
+      "timestamp": "2026-11-20T18:41:10Z",
       "receivedAt": "2026-11-20T18:41:11Z",
+      "alertStatus": "CRITICAL",
+      "alertReason": "Battery last call",
       "batteryLevel": 9.0,
+      "isCharging": false,
+      "powerSaveMode": true,
+      "appState": "background",
+      "pendingEventCount": 4,
       "travelStatus": "in_vehicle",
       "location": { "lat": 48.1374, "lon": 11.5755, "accuracyM": 6.5, "capturedAt": "2026-11-20T18:41:08Z" },
+      "lastKnownLocation": { "lat": 48.1374, "lon": 11.5755, "accuracyM": 6.5, "capturedAt": "2026-11-20T18:41:08Z" },
       "heading": { "degrees": 274.0, "speedMps": 12.3 }
     }
   ]
 }
 ```
 
-* `alertType`: `"battery_low" | "battery_last_call" | "connectivity_degraded" | "connectivity_last_call" | "presence_offline" | "presence_recovered"`.
+* `alertType` and `alertStatus` per type:
+
+| `alertType` | `alertStatus` | `alertReason` | Main extra fields |
+|---|---|---|---|
+| `battery_low` | `WARNING` | `"Battery low"` | the D1 body |
+| `battery_last_call` | `CRITICAL` | `"Battery last call"` | the D2 body |
+| `connectivity_degraded` | `OK` | `null` | the E1 body (`signalLevel`, `previousSignalLevel`, `signalDbm`, `previousSignalDbm`, `windowSeconds`, ...) |
+| `connectivity_last_call` | `OK` | `null` | the E2 body |
+| `presence_offline` | `CRITICAL` | the cause, see Contract F | `lastSeenAt`, `silentSeconds`, `lastCallType`, `location`, `heading` |
+| `presence_recovered` | `OK` | `"Back online"` | `lastSeenAt`, `offlineAlertSentAt`, `location`, `heading` |
+
+* Each record is the event as sent plus the cloud-derived `alertType`, `timestamp` (normalized to seconds), `receivedAt`, `travelStatus`, `alertStatus` and `alertReason`. Storage-only attributes (`sortKey`, `expiresAt`, `schemaVersion`, `deviceId`) are removed.
+* `batteryLevel` is returned in **percent** (stored as the phone's ratio), so every endpoint uses the same unit. Presence rows have no `batteryLevel`.
+* `limit`: as in #2. A device without alerts returns `{ "deviceId": "...", "records": [] }`.
 
 ---
 
@@ -259,7 +306,7 @@ A **separate event** sent once when the battery drops to or below the **last-cal
 ```
 
 * **Field rules:** same as D1, except `batteryLevel` must be $\le 0.10$, and `lastKnownLocation` is required (it is the position and heading at the moment of the call). `pendingEventCount`: integer $\ge 0$, number of unsent events in the offline queue, so the cloud knows more data may follow.
-* **Cloud processing:** adds `travelStatus` and `receivedAt`, evaluates the alert as `CRITICAL` (`alertReason = "Battery last call"`), stores the event in `ALERTS_TABLE`, and sets `lastKnownLocation` and `lastCallType = "battery"` in `LATEST_TABLE`. The presence logic (Contract F) uses this to explain a later silence as "likely battery dead".
+* **Cloud processing:** adds `travelStatus` and `receivedAt`, evaluates the alert as `CRITICAL` (`alertReason = "Battery last call"`), stores the event in `ALERTS_TABLE`, and sets `lastKnownLocation`, `lastKnownHeading`, `lastCallType = "battery"` and `lastCallAt` (the event timestamp) in `LATEST_TABLE`. The presence logic (Contract F) uses this to explain a later silence as "likely battery dead".
 * **Responses:** identical to D1.
 
 ### Contract E1: Connectivity Degraded (`POST /api/events/connectivity-degraded`)
@@ -275,6 +322,7 @@ Sent when the signal falls **quickly**: the level drops by at least `SIGNAL_DROP
   "signalLevel": 1,
   "previousSignalLevel": 3,
   "signalDbm": -108,
+  "previousSignalDbm": -84,
   "windowSeconds": 45,
   "networkType": "cellular",
   "pendingEventCount": 2,
@@ -284,7 +332,7 @@ Sent when the signal falls **quickly**: the level drops by at least `SIGNAL_DROP
 }
 ```
 
-* **Field rules:** `signalLevel` and `previousSignalLevel`: integers 0..4, with `previousSignalLevel - signalLevel >= 2` (or the dBm rule), otherwise `400`. `signalDbm`: optional number. `windowSeconds`: integer $1 \le \text{value} \le 60$. `networkType`: `"wifi" | "cellular" | "none"`. `pendingEventCount`: integer $\ge 0$. `batteryLevel`: ratio 0.0 to 1.0 so the cloud can correlate. `location` (or `lastKnownLocation`) is required and `heading` is optional (may be `null`), same rules as D1.
+* **Field rules:** `signalLevel` and `previousSignalLevel`: integers 0..4, `signalDbm`: optional number. `previousSignalDbm`: optional number, the best (highest) dBm inside the window. The event is valid when `previousSignalLevel - signalLevel >= SIGNAL_DROP_BARS` **or**, if both `previousSignalDbm` and `signalDbm` are sent, `previousSignalDbm - signalDbm >= SIGNAL_DROP_DBM`; otherwise `400`. Without `previousSignalDbm` only the bar rule can be checked, so a dBm-only drop is rejected. `windowSeconds`: integer $1 \le \text{value} \le 60$. `networkType`: `"wifi" | "cellular" | "none"`. `pendingEventCount`: integer $\ge 0$. `batteryLevel`: ratio 0.0 to 1.0 so the cloud can correlate. `location` (or `lastKnownLocation`) is required and `heading` is optional (may be `null`), same rules as D1.
 * **Cloud processing:** adds `travelStatus` and `receivedAt`, stores the event in `ALERTS_TABLE`, writes `signalLevel` to the latest entry, and feeds the coverage data. `alertStatus` is not changed.
 * **Responses:** identical to D1.
 
@@ -311,14 +359,14 @@ A **separate event** sent when the connection is about to be lost: `signalLevel 
 ```
 
 * **Field rules:** `signalLevel` must be `0` or `signalDbm <= -110` (otherwise `400`); `lastKnownLocation` is required; the other fields are as in E1 (`windowSeconds` is not required).
-* **Cloud processing:** adds `travelStatus` and `receivedAt`, stores the event in `ALERTS_TABLE`, and sets `lastKnownLocation` and `lastCallType = "connectivity"` in `LATEST_TABLE`. It **does not alert the team on its own**: a short outage must not notify anyone, and the team alert is raised only by the presence logic in Contract F after the grace period.
+* **Cloud processing:** adds `travelStatus` and `receivedAt`, stores the event in `ALERTS_TABLE`, and sets `lastKnownLocation`, `lastKnownHeading`, `lastCallType = "connectivity"` and `lastCallAt` in `LATEST_TABLE`. It **does not alert the team on its own**: a short outage must not notify anyone, and the team alert is raised only by the presence logic in Contract F after the grace period.
 * **Responses:** identical to D1.
 
 ### Contract F: Server-Side Presence (no device endpoint)
 
 The phone cannot report its own silence, so the cloud detects it. A device that is quiet for a few seconds or a minute causes **no notification**; an alert is raised only once the device has been silent for at least the grace period (default 4 minutes).
 
-* **Liveness fields (updated on every accepted event of any type, in `LATEST_TABLE`):**
+* **Liveness fields (updated on every accepted event of any type, in `LATEST_TABLE`, by the processor and the event Lambdas):**
   * `lastSeenAt`: server receipt time. Used for the liveness decision, because device clocks cannot be trusted.
   * `lastEventTimestamp`: device capture time. Used for event ordering and outage measurement.
   * `presenceState`: `"ONLINE" | "SUSPECT" | "OFFLINE"`.
@@ -336,25 +384,28 @@ ONLINE ──silent > SUSPECT_AFTER_SECONDS──► SUSPECT ──silent >= gra
   * **SUSPECT** is internal and notifies nobody.
   * **OFFLINE** raises one `presence_offline` alert and sets `offlineAlertSentAt`. The minute-by-minute sweep never re-alerts while the state is `OFFLINE`.
   * **Recovery:** any event moves the device to `ONLINE`. A `presence_recovered` notice is sent only if `offlineAlertSentAt` was set, and the field is cleared.
-  * **Hysteresis:** after a recovery, the device must stay `ONLINE` for `RECOVERY_STABLE_SECONDS` before a new `OFFLINE` alert may fire (stops flapping).
+  * **No flapping:** a new `OFFLINE` alert always needs a fresh `OFFLINE_GRACE_SECONDS` of silence after the device came back, so a separate recovery timer is not needed.
 
-* **Detection:** a scheduled `presence` Lambda (EventBridge, every minute) queries devices whose `lastSeenAt` is older than the grace period and whose state is not yet `OFFLINE`. **Adaptive grace:** `grace = max(OFFLINE_GRACE_SECONDS, 3 × usual heartbeat interval)`, so a device in power-save mode that reports less often is not flagged.
+* **Detection:** a scheduled `presence` Lambda (EventBridge `rate(1 minute)`, no retries) scans the latest table and applies the rules above to each device that has a `lastSeenAt`. Because it runs once a minute, a device becomes `SUSPECT` 60 to 120 s and `OFFLINE` 240 to 300 s after its last contact.
+  * Every write is conditional on the `lastSeenAt` and state just read, so a device that reports during the sweep is never marked; the `OFFLINE` write also requires that no alert is open (`offlineAlertSentAt` absent), so there is never a duplicate alert.
+  * The state change and its alert row are written in one DynamoDB transaction (both or neither).
+  * The grace is **fixed** (`OFFLINE_GRACE_SECONDS`). An adaptive grace (`max(OFFLINE_GRACE_SECONDS, 3 × usual heartbeat interval)`, for devices in power-save mode) is a possible later improvement.
 
-* **Cause inference** (stored in the alert and used in `alertReason`), from the last event received:
-  * `lastCallType == "battery"` $\rightarrow$ `"Silent after battery last call (likely battery dead)"`
-  * `lastCallType == "connectivity"` $\rightarrow$ `"Silent after connectivity last call (signal lost)"`
-  * otherwise $\rightarrow$ `"Silent, cause unknown"`
-  * The alert includes `lastKnownLocation` and the last `heading` exactly as last reported. The cloud does **not** predict or estimate the device's current position.
+* **Cause inference** (stored in the alert and used in `alertReason`). A last call counts only if it was the final thing received, i.e. `lastCallAt >= lastEventTimestamp`; a last call followed by newer data is stale (the phone kept working).
+  * final `lastCallType == "battery"` $\rightarrow$ `"Silent after battery last call (likely battery dead)"`, position = `lastKnownLocation` / `lastKnownHeading`
+  * final `lastCallType == "connectivity"` $\rightarrow$ `"Silent after connectivity last call (signal lost)"`, position = `lastKnownLocation` / `lastKnownHeading`
+  * otherwise $\rightarrow$ `"Silent, cause unknown"`, position = the last snapshot `location` / `heading`
+  * The position is exactly as last reported. The cloud does **not** predict or estimate the device's current position.
 
 * **Late data:** on reconnect the phone replays its queue with old device timestamps. The cloud measures the real outage from timestamp gaps and records it in history; an outage shorter than the grace period is recorded but never alerted. The liveness decision always uses `lastSeenAt` and outage duration always uses the device timestamps.
 
-* **Environment variables:** `SUSPECT_AFTER_SECONDS=60`, `OFFLINE_GRACE_SECONDS=240`, `RECOVERY_STABLE_SECONDS=120`.
+* **Environment variables:** `SUSPECT_AFTER_SECONDS=60`, `OFFLINE_GRACE_SECONDS=240`.
 
 ### Environment Variables for Contracts D1 to F
 
 * `BATTERY_LOW_THRESHOLD=0.20`, `BATTERY_LAST_CALL_THRESHOLD=0.10`
 * `SIGNAL_DROP_BARS=2`, `SIGNAL_DROP_DBM=15`, `SIGNAL_LOST_DBM=-110`, `SIGNAL_DROP_WINDOW_SECONDS=60`
-* `SUSPECT_AFTER_SECONDS=60`, `OFFLINE_GRACE_SECONDS=240`, `RECOVERY_STABLE_SECONDS=120`
+* `SUSPECT_AFTER_SECONDS=60`, `OFFLINE_GRACE_SECONDS=240`
 * `ALERTS_TABLE` (events table, keyed by `deviceId` and `sortKey` = `<timestamp>#<alertType>`), `LATEST_TABLE` (existing), `ALLOWED_ORIGIN` (existing)
 
 ---
@@ -389,7 +440,7 @@ Share **Section 1** alongside the assigned track specification below so each tea
 * **Location, Signal and Last-Call Triggers (Contracts A, D1 to E2):**
   * Every sampling cycle, also emit the raw `location`, `motion_heading` and `signal_strength` events in the same batch. **Every device sends its location.**
   * **Battery:** send Contract D1 once when `battery.level <= 0.20` and not charging; send Contract D2 once when `battery.level <= 0.10` and not charging. Re-arm D1 and D2 after charging starts or the level climbs 0.05 above the threshold. The only comparison done on the device is "raw value vs. constant threshold" to decide *when* to send, never to compute a result.
-  * **Connectivity:** keep the last `signal_strength` readings of the past `SIGNAL_DROP_WINDOW_SECONDS` and send Contract E1 when the level drops by 2 bars or 15 dBm inside the window; send Contract E2 when `level == 0` or `dbm <= -110`. Raw values only.
+  * **Connectivity:** keep the last `signal_strength` readings of the past `SIGNAL_DROP_WINDOW_SECONDS` and send Contract E1 when the level drops by 2 bars or 15 dBm inside the window, including `previousSignalDbm` (the best dBm of the window) so the cloud can verify a dBm drop; send Contract E2 when `level == 0` or `dbm <= -110`. Raw values only.
   * Last-call events (D2, E2) go to the **front** of the offline queue; if the send fails they stay queued and are replayed with their original `timestamp`.
   * The device never raises a "device offline" alert itself (Contract F is cloud-only).
 
@@ -438,7 +489,7 @@ Share **Section 1** alongside the assigned track specification below so each tea
 
 * **Step 4 — Persistence & Query Serving:**
   * Persist snapshot matching **Contract B** and return `202 Accepted` with `{ "accepted": <count>, "deviceId": "<deviceId>" }`.
-  * Implement `GET /api/devices` and `GET /api/devices/{deviceId}/telemetry` strictly matching **Contract C**.
+  * Implement `GET /api/devices`, `GET /api/devices/{deviceId}/telemetry` and `GET /api/devices/{deviceId}/alerts` strictly matching **Contract C** (one `query` Lambda, routed by the API Gateway resource template; unknown routes return `404`).
   * Enable CORS for the Web Dashboard origin.
 
 * **Event Handlers (one Lambda per event family, same structure as the existing handlers):** the two battery events share one Lambda and the two connectivity events share another. Each Lambda serves two routes and chooses the event from the request path (the last segment, e.g. `battery-low`); an unknown path returns `404`. The contracts, validation and stored `alertType` stay separate per event.
@@ -450,9 +501,9 @@ Share **Section 1** alongside the assigned track specification below so each tea
 | `connectivity` | `handlers.connectivity.handler` | API Gateway `POST /api/events/connectivity-degraded` and `POST /api/events/connectivity-last-call` | E1, E2 |
 | `presence` | `handlers.presence.handler` | EventBridge schedule, every minute | F |
 
-  * Each event handler: (1) verify `x-api-key` (enforced by API Gateway, `401` otherwise); (2) parse and validate the body against its contract (`400` with `details` on failure); (3) add cloud-derived fields (`travelStatus`, `receivedAt`); (4) write the event to `ALERTS_TABLE` and update liveness fields (`lastSeenAt`, `lastEventTimestamp`, `lastKnownLocation`, `lastCallType`) in `LATEST_TABLE`; (5) return `202`. The `presence` handler follows Contract F and returns nothing to a caller.
+  * Each event handler: (1) verify `x-api-key` (enforced by API Gateway, `401` otherwise); (2) parse and validate the body against its contract (`400` with `details` on failure); (3) add cloud-derived fields (`travelStatus`, `receivedAt`); (4) write the event to `ALERTS_TABLE` and update liveness fields (`lastSeenAt`, `presenceState`, `lastEventTimestamp`, and for last calls `lastKnownLocation`, `lastKnownHeading`, `lastCallType`, `lastCallAt`) in `LATEST_TABLE`; (5) return `202`. The `presence` handler follows Contract F and returns nothing to a caller.
   * Shared validators for `location`, `heading` and the common envelope are reused by all handlers; thresholds are read from env vars at call time, as with `QUEUE_URL` today.
-  * The existing `ingest` and `processor` handlers also validate and process the new Contract A event types (`location`, `motion_heading`, `signal_strength`) and update `lastSeenAt`.
+  * The existing `ingest` and `processor` handlers also validate and process the new Contract A event types (`location`, `motion_heading`, `signal_strength`). The processor stores `signal` in the snapshot and, for every batch, sets `lastSeenAt` (from the SQS `SentTimestamp`), `presenceState = ONLINE` and `lastEventTimestamp` on the latest item; neither timestamp ever moves backwards.
 
 ### Track 3: Web Dashboard (Frontend)
 
@@ -487,11 +538,12 @@ Share **Section 1** alongside the assigned track specification below so each tea
   * Azure Functions (or App Service) hosting the Backend API
   * Azure Static Web Apps (or App Service / Blob Static Website) hosting the Mobile PWA and Web Dashboard
 
-* **Future Infrastructure for Contracts D1 to F (not built yet):**
+* **Infrastructure for Contracts D1 to F (built, AWS CDK):**
   * **Note:** the repository now deploys to AWS with CDK (`infrastructure/`, TypeScript, API Gateway, SQS, DynamoDB, Lambda). The Azure resource list above is stale.
-  * Four `POST /api/events/*` routes with API key required, two per Lambda: `battery` and `connectivity` (see Track 2). One `presence` Lambda with an EventBridge rule at `rate(1 minute)`.
+  * Four `POST /api/events/*` routes with API key required, two per Lambda: `battery` and `connectivity` (see Track 2). `GET /api/devices/{deviceId}/alerts` on the `query` Lambda (no API key). One `presence` Lambda (30 s timeout) with an EventBridge rule at `rate(1 minute)` and no retries.
   * An `ALERTS_TABLE` DynamoDB table (partition key `deviceId`, sort key `sortKey` = `<timestamp>#<alertType>`, TTL `expiresAt`), and the new names added to the `FUNCTIONS` list in `lambda-deploy.yml`.
-  * Reserved concurrency: six Lambdas at 2 each (12) exceeds a new account's limit of 10 (set `lambdaReservedConcurrency` to `0` in that case).
+  * Reserved concurrency: six Lambdas at 2 each (12) exceeds a new account's limit of 10 (set `lambdaReservedConcurrency` to `0` in that case, as `cdk.json` does). The presence Lambda needs none: its conditional writes make overlapping runs harmless.
+  * Deploy order: the infrastructure deploy first (it creates `presence`), then the Lambda code deploy. `presence` is listed before `query` in `FUNCTIONS`, so a code deploy that runs too early stops before publishing the query code that exposes `presenceState`.
 
 * **Environment Variable Contract (Injected via App Settings & GitHub Secrets):**
   * **Backend:** `DB_CONNECTION_STRING`, `INGESTION_API_KEY`, `ALLOWED_ORIGIN`

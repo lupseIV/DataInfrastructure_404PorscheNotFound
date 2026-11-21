@@ -37,6 +37,10 @@ def signal_drop_bars():
     return int(_env_float("SIGNAL_DROP_BARS", 2))
 
 
+def signal_drop_dbm():
+    return _env_float("SIGNAL_DROP_DBM", 15)
+
+
 def signal_drop_window_seconds():
     return int(_env_float("SIGNAL_DROP_WINDOW_SECONDS", 60))
 
@@ -148,17 +152,28 @@ def _validate_connectivity_event(body, require_last_known):
 
 
 def validate_connectivity_degraded(body):
-    """Contract E1: the level must have dropped by at least SIGNAL_DROP_BARS inside the window.
+    """Contract E1: the signal dropped fast inside the window.
 
-    Only the bar drop is checked: the payload carries no previous dBm value, so the
-    dBm half of the contract's rule is evaluated on the phone.
+    Valid when the level dropped by at least SIGNAL_DROP_BARS, or when the phone also sent
+    previousSignalDbm (the best dBm of the window) and the dBm dropped by at least
+    SIGNAL_DROP_DBM. Without previousSignalDbm only the bar rule can be checked.
     """
     _validate_connectivity_event(body, require_last_known=False)
     window = body.get("windowSeconds")
     if not is_int(window) or not 1 <= window <= signal_drop_window_seconds():
         raise ValidationError(f"event: windowSeconds must be an integer between 1 and {signal_drop_window_seconds()}")
-    if body["previousSignalLevel"] - body["signalLevel"] < signal_drop_bars():
-        raise ValidationError(f"event: signal must have dropped by at least {signal_drop_bars()} bars")
+    if "previousSignalDbm" in body and not is_number(body["previousSignalDbm"]):
+        raise ValidationError("event: previousSignalDbm must be a number")
+
+    bars_drop = body["previousSignalLevel"] - body["signalLevel"]
+    dbm_drop = None
+    if "previousSignalDbm" in body and "signalDbm" in body:
+        dbm_drop = body["previousSignalDbm"] - body["signalDbm"]
+    if bars_drop < signal_drop_bars() and (dbm_drop is None or dbm_drop < signal_drop_dbm()):
+        raise ValidationError(
+            f"event: signal must have dropped by at least {signal_drop_bars()} bars "
+            f"or {signal_drop_dbm():g} dBm (dBm needs previousSignalDbm and signalDbm)"
+        )
 
 
 def validate_connectivity_last_call(body):

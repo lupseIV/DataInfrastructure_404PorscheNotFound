@@ -85,6 +85,35 @@ class ValidatorTests(unittest.TestCase):
         self.rejects(event_validation.validate_connectivity_degraded, connectivity(level=2, previous=3))
         self.rejects(event_validation.validate_connectivity_degraded, connectivity(level=1, previous=3, windowSeconds=61))
 
+    def test_degraded_accepts_dbm_drop_with_previous_dbm(self):
+        # 3 -> 2 bars is only 1 bar, but -85 -> -102 is a 17 dBm drop.
+        event_validation.validate_connectivity_degraded(
+            connectivity(level=2, previous=3, signalDbm=-102, previousSignalDbm=-85))
+        # Exactly at the threshold counts.
+        event_validation.validate_connectivity_degraded(
+            connectivity(level=2, previous=3, signalDbm=-100, previousSignalDbm=-85))
+
+    def test_degraded_rejects_drop_under_both_thresholds(self):
+        self.rejects(event_validation.validate_connectivity_degraded,
+                     connectivity(level=2, previous=3, signalDbm=-95, previousSignalDbm=-85))
+
+    def test_degraded_dbm_drop_needs_previous_dbm(self):
+        # Without previousSignalDbm the server cannot see a dBm drop: only the bar rule applies.
+        self.rejects(event_validation.validate_connectivity_degraded,
+                     connectivity(level=2, previous=3, signalDbm=-102))
+        # previousSignalDbm without signalDbm cannot prove a drop either.
+        self.rejects(event_validation.validate_connectivity_degraded,
+                     connectivity(level=2, previous=3, previousSignalDbm=-85))
+
+    def test_degraded_previous_dbm_must_be_a_number(self):
+        self.rejects(event_validation.validate_connectivity_degraded,
+                     connectivity(level=1, previous=3, signalDbm=-102, previousSignalDbm="-85"))
+
+    def test_degraded_dbm_threshold_from_env(self):
+        body = connectivity(level=2, previous=3, signalDbm=-102, previousSignalDbm=-85)
+        with mock.patch.dict(os.environ, {"SIGNAL_DROP_DBM": "20"}):
+            self.rejects(event_validation.validate_connectivity_degraded, body)
+
     def test_last_call_needs_lost_signal(self):
         event_validation.validate_connectivity_last_call(connectivity(level=0, previous=1))
         event_validation.validate_connectivity_last_call(connectivity(level=1, previous=2, signalDbm=-115))
@@ -194,6 +223,40 @@ class HandlerTests(unittest.TestCase):
         update = self.latest.updates[0]
         self.assertNotIn("lastKnownLocation", update["ExpressionAttributeNames"].values())
         self.assertIn("lastSeenAt", update["ExpressionAttributeNames"].values())
+
+    def latest_fields(self, n=0):
+        update = self.latest.updates[n]
+        names, values = update["ExpressionAttributeNames"], update["ExpressionAttributeValues"]
+        sets = update["UpdateExpression"].split("SET ", 1)[1].split(", ")
+        return {names[n_]: values[v] for n_, v in (s.split(" = ") for s in sets)}
+
+    def test_both_last_calls_record_when_they_happened(self):
+        self.call("battery-last-call", battery(timestamp="2026-11-20T18:41:10.500Z"))
+        self.call("connectivity-last-call", connectivity(level=0, previous=1))
+        battery_fields, conn_fields = self.latest_fields(0), self.latest_fields(1)
+        self.assertEqual(battery_fields["lastCallType"], "battery")
+        self.assertEqual(battery_fields["lastCallAt"], TS)  # normalized like every timestamp
+        self.assertEqual(conn_fields["lastCallType"], "connectivity")
+        self.assertEqual(conn_fields["lastCallAt"], TS)
+        # Same value as lastEventTimestamp, so presence sees it as the final thing sent.
+        self.assertEqual(battery_fields["lastCallAt"], battery_fields["lastEventTimestamp"])
+
+    def test_status_events_do_not_set_last_call(self):
+        self.call("battery-low", battery(0.19))
+        self.call("connectivity-degraded", connectivity(level=1, previous=3))
+        for n in (0, 1):
+            self.assertNotIn("lastCallAt", self.latest_fields(n))
+            self.assertNotIn("lastCallType", self.latest_fields(n))
+
+    def test_replayed_old_last_call_does_not_overwrite_newer_one(self):
+        # Stored lastEventTimestamp is newer, so the conditional update fails and only
+        # liveness is refreshed: lastCallAt / lastCallType stay as they are.
+        self.latest.fail_condition = True
+        self.call("battery-last-call", battery())
+        fields = self.latest_fields(0)
+        self.assertNotIn("lastCallAt", fields)
+        self.assertNotIn("lastCallType", fields)
+        self.assertEqual(fields["presenceState"], "ONLINE")
 
     def test_same_event_replayed_overwrites_same_alert_row(self):
         self.call("battery-last-call", battery())
