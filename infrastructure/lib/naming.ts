@@ -7,7 +7,7 @@
  */
 
 /** Lambda functions of the backend. The name is also the handler module: handlers/<name>.py */
-export const FUNCTION_NAMES = ['ingest', 'processor', 'query', 'battery', 'connectivity'] as const;
+export const FUNCTION_NAMES = ['ingest', 'processor', 'query', 'battery', 'connectivity', 'presence'] as const;
 export type FunctionName = (typeof FUNCTION_NAMES)[number];
 
 /** CloudFormation stack names, e.g. "fleet-telemetry-web". */

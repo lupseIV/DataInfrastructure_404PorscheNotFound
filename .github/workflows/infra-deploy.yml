@@ -6,12 +6,12 @@ name: Infra / Deploy stacks and Lambdas
 #
 #   checks ──▶ plan ──▶ web ───────────────┐
 #                  ├──▶ data ──▶ lambdas stack ──▶ api
-#                  └──▶ ingest · processor · query · battery · connectivity  (code only)
+#                  └──▶ ingest · processor · presence ─▶ query · battery · connectivity  (code only)
 #
 # - Pull requests: checks only (tsc + synth, Python compile + tests).
 # - main (merge): "plan" runs cdk diff per stack and finds the Lambdas the change affects.
 #   Only stacks with differences and affected Lambdas get a job; each one pauses on its GitHub
-#   environment (stack-web ... stack-api, lambda-ingest ... lambda-connectivity) until someone
+#   environment (stack-web ... stack-api, lambda-ingest ... lambda-presence) until someone
 #   approves it under "Review deployments".
 # - Manual run: pick the stacks and the Lambdas to offer. Stacks = none deploys Lambda code
 #   without touching any stack.
@@ -61,6 +61,7 @@ on:
           - query
           - battery
           - connectivity
+          - presence
 
 permissions:
   contents: read
@@ -134,6 +135,7 @@ jobs:
       fn-query: ${{ steps.functions.outputs.query }}
       fn-battery: ${{ steps.functions.outputs.battery }}
       fn-connectivity: ${{ steps.functions.outputs.connectivity }}
+      fn-presence: ${{ steps.functions.outputs.presence }}
     env:
       STACKS: ${{ inputs.stacks || 'changed' }}
       # A merge offers the Lambdas its changes affect; a manual run offers what was picked.
@@ -348,10 +350,27 @@ jobs:
       environment: lambda-processor
     secrets: inherit
 
+  lambda-presence:
+    name: Lambda presence
+    needs: [plan, deploy-lambdas]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.fn-presence == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/infra-deploy-lambda.yml
+    with:
+      function: presence
+      environment: lambda-presence
+    secrets: inherit
+
   lambda-query:
     name: Lambda query
-    needs: [plan, deploy-lambdas]
-    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.fn-query == 'true' }}
+    # query returns the presenceState that presence writes: when both are offered, query waits
+    # for presence and is skipped if presence was rejected or failed.
+    needs: [plan, deploy-lambdas, lambda-presence]
+    if: >-
+      !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.fn-query == 'true' &&
+      contains(fromJSON('["success","skipped"]'), needs.lambda-presence.result)
     permissions:
       contents: read
       id-token: write

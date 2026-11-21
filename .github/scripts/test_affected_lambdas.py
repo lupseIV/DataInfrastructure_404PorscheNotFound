@@ -9,7 +9,7 @@ import affected_lambdas as al
 
 BACKEND = Path(__file__).resolve().parents[2] / "src" / "backend"
 GRAPH, FUNCTIONS = al.load_graph(BACKEND / "handlers")
-ALL = ["battery", "connectivity", "ingest", "processor", "query"]
+ALL = ["battery", "connectivity", "ingest", "presence", "processor", "query"]
 
 
 def run(*paths: str) -> list[str]:
@@ -27,9 +27,9 @@ def test_handler_module_affects_only_its_function():
 
 def test_shared_modules_follow_imports():
     assert run("src/backend/handlers/event_validation.py") == ["battery", "connectivity"]
-    assert run("src/backend/handlers/event_common.py") == ["battery", "connectivity", "processor"]
+    assert run("src/backend/handlers/event_common.py") == ["battery", "connectivity", "presence", "processor"]
     # validation is imported (directly or through rules / event_*) by all but query
-    assert run("src/backend/handlers/validation.py") == ["battery", "connectivity", "ingest", "processor"]
+    assert run("src/backend/handlers/validation.py") == ["battery", "connectivity", "ingest", "presence", "processor"]
 
 
 def test_package_wide_files_affect_all():

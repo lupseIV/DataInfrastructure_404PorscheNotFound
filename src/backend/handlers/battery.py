@@ -22,6 +22,7 @@ ROUTES = {
             "lastKnownLocation": last_known_location(alert),
             "lastKnownHeading": alert.get("heading"),
             "lastCallType": "battery",
+            "lastCallAt": alert["timestamp"],  # lets presence tell a final last call from a stale one
         },
     },
 }

@@ -316,7 +316,7 @@ class TelemetryService extends ChangeNotifier with WidgetsBindingObserver {
       _degradedArmed = false; // last-call supersedes degraded on this descent
       _push(
         _Outbound(AppConfig.connectivityLastCallUrl,
-            _connectivityBody(sig, prevLevel, ts, geo, lastCall: true)),
+            _connectivityBody(sig, prevLevel, ts, geo, lastCall: true, prevDbm: prevDbm)),
         front: true, // jump the queue: best last-known state before the link dies
       );
       return;
@@ -333,7 +333,7 @@ class TelemetryService extends ChangeNotifier with WidgetsBindingObserver {
       _push(_Outbound(
         AppConfig.connectivityDegradedUrl,
         _connectivityBody(sig, prevLevel, ts, geo,
-            lastCall: false, windowSeconds: windowSeconds),
+            lastCall: false, windowSeconds: windowSeconds, prevDbm: prevDbm),
       ));
     }
   }
@@ -345,6 +345,8 @@ class TelemetryService extends ChangeNotifier with WidgetsBindingObserver {
     GeoSample geo, {
     required bool lastCall,
     int? windowSeconds,
+    // Best (highest) dBm inside the window, so the cloud can verify a dBm-based E1 drop.
+    double? prevDbm,
   }) {
     final body = <String, Object?>{
       'deviceId': deviceId,
@@ -352,6 +354,7 @@ class TelemetryService extends ChangeNotifier with WidgetsBindingObserver {
       'signalLevel': sig.level,
       'previousSignalLevel': prevLevel,
       if (sig.dbm != null) 'signalDbm': sig.dbm,
+      if (prevDbm != null) 'previousSignalDbm': prevDbm,
       'networkType': sig.networkType,
       'pendingEventCount': _queue.length,
       'batteryLevel': lastBatteryRatio ?? 0.0,

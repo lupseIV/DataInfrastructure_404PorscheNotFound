@@ -39,6 +39,7 @@ export interface TelemetryApiProps {
  *   POST /api/events/connectivity-last-call  -> connectivity (requires x-api-key)
  *   GET  /api/devices                        -> query
  *   GET  /api/devices/{deviceId}/telemetry   -> query
+ *   GET  /api/devices/{deviceId}/alerts      -> query
  *
  * API Gateway checks the x-api-key header itself and answers 401 with the contract's body,
  * so the Lambdas never see unauthenticated ingestion requests. Throttling on the stage and
@@ -117,7 +118,9 @@ export class TelemetryApi extends Construct {
     const queryIntegration = new apigateway.LambdaIntegration(props.functions.queryFunction);
     const devices = apiRoot.addResource('devices');
     devices.addMethod('GET', queryIntegration);
-    devices.addResource('{deviceId}').addResource('telemetry').addMethod('GET', queryIntegration);
+    const device = devices.addResource('{deviceId}');
+    device.addResource('telemetry').addMethod('GET', queryIntegration);
+    device.addResource('alerts').addMethod('GET', queryIntegration); // Contract C #3, no API key
 
     // API key for the phone app; API Gateway generates the value.
     this.ingestionApiKey = this.api.addApiKey('IngestionApiKey', {
