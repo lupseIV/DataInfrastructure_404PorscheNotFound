@@ -26,7 +26,8 @@ export interface TelemetryStackProps extends cdk.StackProps {
 /**
  * Serverless telemetry platform:
  * API Gateway -> ingest Lambda -> SQS FIFO (+ DLQ) -> processor Lambda -> DynamoDB,
- * plus a query Lambda behind API Gateway for the web dashboard.
+ * plus a query Lambda behind API Gateway for the web dashboard, and the battery and
+ * connectivity event Lambdas (last calls and status events) that write to the alerts table.
  */
 export class TelemetryStack extends cdk.Stack {
   public readonly tables: TelemetryTables;
@@ -107,6 +108,10 @@ export class TelemetryStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'LatestTableName', {
       value: this.tables.latestTable.tableName,
       description: 'DynamoDB table with the latest snapshot per device',
+    });
+    new cdk.CfnOutput(this, 'AlertsTableName', {
+      value: this.tables.alertsTable.tableName,
+      description: 'DynamoDB table with last-call, status and presence events per device',
     });
     new cdk.CfnOutput(this, 'EventsQueueUrl', {
       value: this.events.queue.queueUrl,

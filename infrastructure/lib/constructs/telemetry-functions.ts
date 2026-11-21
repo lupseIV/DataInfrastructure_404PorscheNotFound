@@ -33,16 +33,37 @@ export interface TelemetryFunctionsProps {
 }
 
 /**
- * The three Python Lambdas of the backend. Code lives in src/backend/handlers.
+ * Thresholds of the event Lambdas (Contracts D1 to E2), passed as environment variables.
+ * The values match the defaults in src/backend/handlers/event_validation.py.
+ */
+const BATTERY_THRESHOLDS: Record<string, string> = {
+  BATTERY_LOW_THRESHOLD: '0.20',
+  BATTERY_LAST_CALL_THRESHOLD: '0.10',
+};
+const CONNECTIVITY_THRESHOLDS: Record<string, string> = {
+  SIGNAL_DROP_BARS: '2',
+  SIGNAL_DROP_WINDOW_SECONDS: '60',
+  SIGNAL_LOST_DBM: '-110',
+};
+
+/**
+ * The Python Lambdas of the backend. Code lives in src/backend/handlers.
  *
  * - ingest:    POST /api/telemetry -> SQS FIFO queue
  * - processor: SQS FIFO queue -> DynamoDB snapshots
  * - query:     GET /api/devices and GET /api/devices/{deviceId}/telemetry
+ *
+ * Event Lambdas (Contracts D1 to E2): one function per family, each serving two routes and
+ * choosing the event from the request path. Both write to the alerts and latest tables.
+ * - battery:       POST /api/events/battery-low and /api/events/battery-last-call
+ * - connectivity:  POST /api/events/connectivity-degraded and /api/events/connectivity-last-call
  */
 export class TelemetryFunctions extends Construct {
   public readonly ingestFunction: lambda.Function;
   public readonly processorFunction: lambda.Function;
   public readonly queryFunction: lambda.Function;
+  public readonly batteryFunction: lambda.Function;
+  public readonly connectivityFunction: lambda.Function;
 
   constructor(scope: Construct, id: string, props: TelemetryFunctionsProps) {
     super(scope, id);
@@ -54,7 +75,9 @@ export class TelemetryFunctions extends Construct {
 
     const createFunction = (name: string, handler: string, timeout: cdk.Duration, environment: Record<string, string>) => {
       const functionName = `${props.projectName}-${name}`;
-      return new lambda.Function(this, `${name[0].toUpperCase()}${name.slice(1)}Function`, {
+      // "battery-last-call" -> "BatteryLastCallFunction"; single-word names give the same ids as before.
+      const pascal = name.split('-').map((part) => part[0].toUpperCase() + part.slice(1)).join('');
+      return new lambda.Function(this, `${pascal}Function`, {
         functionName,
         runtime: lambda.Runtime.PYTHON_3_13,
         architecture: lambda.Architecture.ARM_64,
@@ -64,6 +87,8 @@ export class TelemetryFunctions extends Construct {
         timeout,
         environment,
         reservedConcurrentExecutions: reserved > 0 ? reserved : undefined,
+        // Keep the original id scheme: renaming the log group ids of the existing functions
+        // would make CloudFormation replace log groups that have fixed names.
         logGroup: new logs.LogGroup(this, `${name}Logs`, {
           logGroupName: `/aws/lambda/${functionName}`,
           retention: logs.RetentionDays.ONE_WEEK,
@@ -100,5 +125,26 @@ export class TelemetryFunctions extends Construct {
     });
     props.tables.snapshotsTable.grantReadData(this.queryFunction);
     props.tables.latestTable.grantReadData(this.queryFunction);
+
+    // Event Lambdas (Contracts D1 to E2): each writes an alert row and updates the device's
+    // latest item, so they only need write access to the two tables.
+    const createEventFunction = (name: string, handler: string, thresholds: Record<string, string>) => {
+      const fn = createFunction(name, handler, cdk.Duration.seconds(10), {
+        ALERTS_TABLE: props.tables.alertsTable.tableName,
+        LATEST_TABLE: props.tables.latestTable.tableName,
+        ALLOWED_ORIGIN: props.allowedOrigin,
+        ...thresholds,
+      });
+      props.tables.alertsTable.grantWriteData(fn);
+      props.tables.latestTable.grantWriteData(fn);
+      return fn;
+    };
+
+    this.batteryFunction = createEventFunction('battery', 'handlers.battery.handler', BATTERY_THRESHOLDS);
+    this.connectivityFunction = createEventFunction(
+      'connectivity',
+      'handlers.connectivity.handler',
+      CONNECTIVITY_THRESHOLDS,
+    );
   }
 }

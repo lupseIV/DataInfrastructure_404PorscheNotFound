@@ -21,7 +21,7 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
   PROJECT_NAME: fleet-telemetry
   PYTHON_VERSION: '3.13'
-  FUNCTIONS: ingest processor query
+  FUNCTIONS: ingest processor query battery connectivity
 
 jobs:
   check:

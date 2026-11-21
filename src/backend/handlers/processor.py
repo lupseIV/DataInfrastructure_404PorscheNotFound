@@ -2,10 +2,10 @@
 import json
 import os
 import time
-from decimal import Decimal
 
 import boto3
 
+from .event_common import to_dynamo
 from .rules import build_snapshot, normalize_timestamp
 from .validation import normalize_events, validate_events
 
@@ -21,15 +21,20 @@ def _tables():
     return _ddb.Table(os.environ["SNAPSHOTS_TABLE"]), _ddb.Table(os.environ["LATEST_TABLE"])
 
 
-def to_dynamo(value):
-    """float -> Decimal(str(x)), recursively (boto3 rejects float)."""
-    if isinstance(value, float):
-        return Decimal(str(value))
-    if isinstance(value, dict):
-        return {k: to_dynamo(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [to_dynamo(v) for v in value]
-    return value
+def put_latest(latest_table, snap):
+    """Write the snapshot fields without replacing the item.
+
+    The event Lambdas keep their own fields on the same item (lastSeenAt, lastKnownLocation,
+    lastCallType, ...); a full put_item would erase them.
+    """
+    names = {f"#f{i}": k for i, k in enumerate(snap)}
+    values = {f":f{i}": v for i, v in enumerate(snap.values())}
+    latest_table.update_item(
+        Key={"deviceId": snap["deviceId"]},
+        UpdateExpression="SET " + ", ".join(f"#f{i} = :f{i}" for i in range(len(snap))),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=to_dynamo(values),
+    )
 
 
 def process_events(raw_events):
@@ -42,6 +47,8 @@ def process_events(raw_events):
 
     for device_id, by_ts in by_device.items():
         prev = latest_table.get_item(Key={"deviceId": device_id}).get("Item")
+        if prev is not None and "batteryLevel" not in prev:
+            prev = None  # item created by an event Lambda: no snapshot has been processed yet
         for ts in sorted(by_ts):  # oldest first; fixed-width UTC strings sort chronologically
             if prev and ts <= prev["timestamp"]:
                 # Already processed (SQS retry) or older than the latest state: nothing to do.
@@ -52,7 +59,7 @@ def process_events(raw_events):
             history["expiresAt"] = int(time.time()) + HISTORY_TTL_SECONDS
             # History first: if the latest write fails, the retry redoes both (same keys, safe).
             snapshots_table.put_item(Item=to_dynamo(history))
-            latest_table.put_item(Item=to_dynamo(snap))
+            put_latest(latest_table, snap)
             prev = snap
 
 

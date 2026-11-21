@@ -11,6 +11,7 @@ _ddb = None
 FIELDS = (
     "batteryLevel", "isCharging", "activityState", "drainRatePerHour",
     "estimatedMinutesRemaining", "alertStatus", "alertReason",
+    "location", "heading", "travelStatus",
 )
 DEFAULT_LIMIT, MAX_LIMIT = 50, 500
 
@@ -65,6 +66,8 @@ def list_devices():
         if "LastEvaluatedKey" not in r:
             break
         kwargs["ExclusiveStartKey"] = r["LastEvaluatedKey"]
+    # Items created by an event Lambda before the first snapshot have no 'timestamp' yet.
+    items = [i for i in items if "timestamp" in i]
     items.sort(key=lambda i: i["deviceId"])
     return _response(200, [to_device(i) for i in items])
 

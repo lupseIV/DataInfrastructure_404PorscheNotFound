@@ -23,6 +23,23 @@ def classify_activity(accel):
     return "in_vehicle"
 
 
+# GPS speed thresholds (m/s) for travelStatus: ~1.8 km/h and ~18 km/h.
+WALKING_SPEED_MPS = 0.5
+VEHICLE_SPEED_MPS = 5.0
+
+
+def derive_travel_status(heading):
+    """stationary | walking | in_vehicle from the raw GPS speed; unknown until a heading arrives."""
+    if not heading:
+        return "unknown"
+    speed = float(heading["speedMps"])
+    if speed >= VEHICLE_SPEED_MPS:
+        return "in_vehicle"
+    if speed >= WALKING_SPEED_MPS:
+        return "walking"
+    return "stationary"
+
+
 def evaluate_alert(is_charging, battery, activity, drain):
     if not is_charging:
         if battery < 20:
@@ -79,6 +96,18 @@ def build_snapshot(device_id, timestamp, events, prev):
     remaining = None if charging or drain <= 0 else round(battery / drain * 60)
     status, reason = evaluate_alert(charging, battery, activity, drain)
 
+    # Location and heading are kept as last reported; a batch without them keeps the previous ones.
+    location = base.get("location")
+    if "location" in by_type:
+        raw = by_type["location"]
+        location = {"lat": raw["lat"], "lon": raw["lon"], "accuracyM": raw["accuracyM"], "capturedAt": timestamp}
+        if "altitudeM" in raw:
+            location["altitudeM"] = raw["altitudeM"]
+    heading = base.get("heading")
+    if "motion_heading" in by_type:
+        raw = by_type["motion_heading"]
+        heading = {"degrees": raw["degrees"], "speedMps": raw["speedMps"]}
+
     return {
         "id": f"{device_id}_{timestamp}",
         "deviceId": device_id,
@@ -90,5 +119,8 @@ def build_snapshot(device_id, timestamp, events, prev):
         "estimatedMinutesRemaining": remaining,
         "alertStatus": status,
         "alertReason": reason,
+        "location": location,
+        "heading": heading,
+        "travelStatus": derive_travel_status(heading),
         "lastAccel": accel,
     }
