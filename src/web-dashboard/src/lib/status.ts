@@ -2,7 +2,8 @@
 // This is display grouping only; alerts (OK / WARNING / CRITICAL) come from the backend.
 //
 // A device belongs to the first group that matches, in this order:
-//   offline  -> no data for staleAfterMs (30 s) or more
+//   offline  -> the server says OFFLINE (presenceState, Contract F); if the backend
+//               doesn't send presenceState, no data for staleAfterMs (30 s) or more
 //   charging -> plugged in
 //   critical -> battery < 20 %
 //   low      -> 20 % to < 40 %
@@ -59,7 +60,7 @@ export const STATUS_GROUPS: StatusGroupInfo[] = [
     chipBorder: "border-cyan-500/30", chipActive: "bg-cyan-500/15 border-cyan-400 ring-1 ring-cyan-400/40", iconBg: "bg-cyan-500/15 text-cyan-400",
   },
   {
-    id: "offline", label: "Offline", shortLabel: "Offline", range: ">30s Stale", icon: "wifi_off",
+    id: "offline", label: "Offline", shortLabel: "Offline", range: "Not reporting", icon: "wifi_off",
     color: "#64748b", text: "text-slate-400", dot: "bg-slate-500", bar: "bg-slate-600",
     chipBorder: "border-slate-600/40", chipActive: "bg-slate-500/15 border-slate-400 ring-1 ring-slate-400/40", iconBg: "bg-slate-700/30 text-slate-400",
   },
@@ -72,14 +73,35 @@ const BY_ID = Object.fromEntries(STATUS_GROUPS.map((g) => [g.id, g])) as Record<
 
 export const groupInfo = (id: StatusGroup): StatusGroupInfo => BY_ID[id];
 
-/** True when the device has not reported for `staleAfterMs` or longer (or the time is unreadable). */
-export function isStale(lastUpdated: string | null | undefined, now: number, staleAfterMs: number) {
-  const t = lastUpdated ? Date.parse(lastUpdated) : NaN;
+/** True when the time is `staleAfterMs` or more in the past (or unreadable). */
+export function isStale(timestamp: string | null | undefined, now: number, staleAfterMs: number) {
+  const t = timestamp ? Date.parse(timestamp) : NaN;
   return Number.isNaN(t) || now - t >= staleAfterMs;
 }
 
+/**
+ * When the server last heard from the device: `lastSeenAt` (server clock) when the
+ * backend sends it, otherwise the device's `lastUpdated`.
+ */
+export function lastSeenOf(device: Device): string {
+  return device.lastSeenAt ?? device.lastUpdated;
+}
+
+/**
+ * Offline means the server's presence check says OFFLINE (it waits a grace period,
+ * 4 minutes by default). Older backends without `presenceState` fall back to
+ * "no data for staleAfterMs".
+ */
+export function isOffline(device: Device, now: number, staleAfterMs: number): boolean {
+  if (device.presenceState) return device.presenceState === "OFFLINE";
+  return isStale(lastSeenOf(device), now, staleAfterMs);
+}
+
+/** Silent for over a minute but not yet OFFLINE (server presence only). */
+export const isSuspect = (device: Device) => device.presenceState === "SUSPECT";
+
 export function getStatusGroup(device: Device, now: number, staleAfterMs: number): StatusGroup {
-  if (isStale(device.lastUpdated, now, staleAfterMs)) return "offline";
+  if (isOffline(device, now, staleAfterMs)) return "offline";
   if (device.isCharging) return "charging";
   const level = typeof device.batteryLevel === "number" ? device.batteryLevel : 0;
   if (level < 20) return "critical";

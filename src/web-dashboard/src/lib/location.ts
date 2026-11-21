@@ -1,19 +1,21 @@
 // Map position of each device.
 //
-// The backend does not send coordinates yet. When a device has `latitude` and
-// `longitude`, those are used. Otherwise the device gets a fixed approximate
-// position around the configured map center, derived from its ID so it doesn't
-// jump between refreshes. The map shows a note whenever approximate positions are used.
+// Contract C sends `location: { lat, lon, accuracyM, capturedAt }` once the phone has a
+// GPS fix. Until then (`location` missing or null) the device gets a fixed approximate
+// position around the configured map center, derived from its ID so it doesn't jump
+// between refreshes. The map legend says how many devices are placed approximately.
 
 import type { Device } from "../types";
 
 export interface DevicePosition {
   lat: number;
   lng: number;
+  /** GPS accuracy radius in meters, or null for an approximate position. */
+  accuracyM: number | null;
   approximate: boolean;
 }
 
-const isCoord = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+const isNum = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
 
 /** Small deterministic hash (FNV-1a) of a string, as a number in [0, 1). */
 function hash01(text: string, seed: number): number {
@@ -33,15 +35,41 @@ function hash01(text: string, seed: number): number {
 
 const SPREAD_KM = 3; // approximate positions fall within this radius of the center
 
-export function getDevicePosition(device: Device, center: [number, number]): DevicePosition {
-  if (isCoord(device.latitude) && isCoord(device.longitude)) {
-    return { lat: device.latitude, lng: device.longitude, approximate: false };
-  }
+/** Moves a point `distanceM` meters in direction `bearingDeg` (0 = north). */
+export function offsetPosition(
+  lat: number,
+  lng: number,
+  distanceM: number,
+  bearingDeg: number,
+): [number, number] {
+  const rad = (bearingDeg * Math.PI) / 180;
+  const dLat = (distanceM * Math.cos(rad)) / 111_320;
+  const dLng = (distanceM * Math.sin(rad)) / (111_320 * Math.cos((lat * Math.PI) / 180));
+  return [lat + dLat, lng + dLng];
+}
 
-  const angle = hash01(device.deviceId, 1) * 2 * Math.PI;
-  const distanceKm = (0.25 + 0.75 * Math.sqrt(hash01(device.deviceId, 2))) * SPREAD_KM;
-  const [lat, lng] = center;
-  const dLat = (distanceKm / 111.32) * Math.sin(angle);
-  const dLng = (distanceKm / (111.32 * Math.cos((lat * Math.PI) / 180))) * Math.cos(angle);
-  return { lat: lat + dLat, lng: lng + dLng, approximate: true };
+/** Fixed pseudo-random point near `center`, derived from the device ID. */
+export function approximatePosition(deviceId: string, center: [number, number]): [number, number] {
+  const bearing = hash01(deviceId, 1) * 360;
+  const distanceM = (0.25 + 0.75 * Math.sqrt(hash01(deviceId, 2))) * SPREAD_KM * 1000;
+  return offsetPosition(center[0], center[1], distanceM, bearing);
+}
+
+export function hasGpsFix(device: Device): boolean {
+  const loc = device.location;
+  return !!loc && isNum(loc.lat) && isNum(loc.lon);
+}
+
+export function getDevicePosition(device: Device, center: [number, number]): DevicePosition {
+  const loc = device.location;
+  if (loc && isNum(loc.lat) && isNum(loc.lon)) {
+    return {
+      lat: loc.lat,
+      lng: loc.lon,
+      accuracyM: isNum(loc.accuracyM) && loc.accuracyM >= 0 ? loc.accuracyM : null,
+      approximate: false,
+    };
+  }
+  const [lat, lng] = approximatePosition(device.deviceId, center);
+  return { lat, lng, accuracyM: null, approximate: true };
 }

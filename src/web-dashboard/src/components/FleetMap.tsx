@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { Map as LeafletMap } from "leaflet";
-import { CircleMarker, MapContainer, TileLayer, Tooltip } from "react-leaflet";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { divIcon, type DivIcon, type Map as LeafletMap } from "leaflet";
+import { Circle, CircleMarker, MapContainer, Marker, TileLayer, Tooltip } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import { config } from "../config";
 import { formatPercent } from "../lib/format";
 import { getDevicePosition } from "../lib/location";
-import { STATUS_GROUPS, groupInfo, type StatusGroup } from "../lib/status";
+import { STATUS_GROUPS, groupInfo, isSuspect, type StatusGroup } from "../lib/status";
 import type { Device } from "../types";
 import type { DeviceRow } from "./DeviceSidebar";
 import { Icon } from "./Icon";
@@ -31,8 +31,43 @@ const LEGEND_LABELS: Record<StatusGroup, string> = {
   medium: "Medium (40–70%)",
   high: "High (≥70%)",
   charging: "Charging",
-  offline: "Offline (>30s)",
+  offline: "Offline",
 };
+
+const SUSPECT_BORDER = "#f59e0b";
+/** Below this speed a device counts as not moving and gets no direction arrow. */
+const MIN_MOVING_SPEED_MPS = 0.5;
+
+const arrowIcons = new Map<string, DivIcon>();
+
+/** Small arrow outside the marker, pointing in the direction of travel. Cached per color and angle. */
+function headingIcon(color: string, degrees: number, distancePx: number): DivIcon {
+  const angle = Math.round(degrees / 5) * 5; // fewer distinct icons to cache
+  const key = `${color}|${angle}|${distancePx}`;
+  let icon = arrowIcons.get(key);
+  if (!icon) {
+    const size = distancePx * 2 + 12;
+    const c = size / 2;
+    icon = divIcon({
+      className: "",
+      iconSize: [size, size],
+      iconAnchor: [c, c],
+      html:
+        `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="transform:rotate(${angle}deg)">` +
+        `<path d="M${c} ${c - distancePx - 5} L${c + 4.5} ${c - distancePx + 2} L${c - 4.5} ${c - distancePx + 2} Z" ` +
+        `fill="${color}" stroke="${MARKER_BORDER}" stroke-width="1.2" stroke-linejoin="round"/></svg>`,
+    });
+    arrowIcons.set(key, icon);
+  }
+  return icon;
+}
+
+function movingHeading(device: Device, group: StatusGroup): number | null {
+  const h = device.heading;
+  if (group === "offline" || !h) return null;
+  if (typeof h.degrees !== "number" || typeof h.speedMps !== "number") return null;
+  return h.speedMps >= MIN_MOVING_SPEED_MPS ? h.degrees : null;
+}
 
 export function FleetMap({
   rows,
@@ -58,7 +93,9 @@ export function FleetMap({
       })),
     [rows, center],
   );
-  const anyApproximate = markers.some((m) => m.position.approximate);
+  const approximateCount = markers.filter((m) => m.position.approximate).length;
+  const anyMoving = markers.some((m) => movingHeading(m.device, m.group) !== null);
+  const anySuspect = markers.some((m) => isSuspect(m.device));
   const selectedId = selectedDevice?.deviceId ?? null;
 
   // Keep Leaflet's size in sync when the side panels open or close.
@@ -124,18 +161,36 @@ export function FleetMap({
         {markers.map(({ device, group, position }) => {
           if (device.deviceId === selectedId) return null; // drawn last, on top
           const g = groupInfo(group);
+          const suspect = isSuspect(device);
+          const heading = movingHeading(device, group);
           return (
-            <CircleMarker
-              key={device.deviceId}
-              center={[position.lat, position.lng]}
-              radius={7}
-              pathOptions={{ color: MARKER_BORDER, weight: 2, fillColor: g.color, fillOpacity: 1 }}
-              eventHandlers={{ click: () => onSelect(device.deviceId) }}
-            >
-              <Tooltip direction="top" offset={[0, -8]} className="device-label">
-                {device.deviceId} · {group === "offline" ? "Offline" : formatPercent(device.batteryLevel)}
-              </Tooltip>
-            </CircleMarker>
+            <Fragment key={device.deviceId}>
+              {heading !== null && (
+                <Marker
+                  position={[position.lat, position.lng]}
+                  icon={headingIcon(g.color, heading, 11)}
+                  interactive={false}
+                  keyboard={false}
+                />
+              )}
+              <CircleMarker
+                center={[position.lat, position.lng]}
+                radius={7}
+                pathOptions={{
+                  color: suspect ? SUSPECT_BORDER : MARKER_BORDER,
+                  weight: 2,
+                  dashArray: suspect ? "3 2" : undefined,
+                  fillColor: g.color,
+                  fillOpacity: group === "offline" ? 0.6 : 1,
+                }}
+                eventHandlers={{ click: () => onSelect(device.deviceId) }}
+              >
+                <Tooltip direction="top" offset={[0, -8]} className="device-label">
+                  {device.deviceId} · {group === "offline" ? "Offline" : formatPercent(device.batteryLevel)}
+                  {suspect ? " · no data >1 min" : ""}
+                </Tooltip>
+              </CircleMarker>
+            </Fragment>
           );
         })}
 
@@ -143,8 +198,20 @@ export function FleetMap({
           const { device, group, position } = selectedMarker;
           const g = groupInfo(group);
           const latLng: [number, number] = [position.lat, position.lng];
+          const heading = movingHeading(device, group);
           return (
             <>
+              {position.accuracyM !== null && position.accuracyM > 0 && (
+                <Circle
+                  center={latLng}
+                  radius={position.accuracyM}
+                  interactive={false}
+                  pathOptions={{ color: g.color, weight: 1, dashArray: "4 4", fillColor: g.color, fillOpacity: 0.08 }}
+                />
+              )}
+              {heading !== null && (
+                <Marker position={latLng} icon={headingIcon(g.color, heading, 25)} interactive={false} keyboard={false} />
+              )}
               <CircleMarker
                 center={latLng}
                 radius={22}
@@ -223,13 +290,29 @@ export function FleetMap({
             </div>
           ))}
         </div>
-        {anyApproximate && (
+        {(anyMoving || anySuspect) && (
+          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[10px] font-mono text-slate-300">
+            {anyMoving && (
+              <span className="flex items-center gap-1.5">
+                <Icon name="navigation" className="text-[11px] text-slate-300" /> Direction of travel
+              </span>
+            )}
+            {anySuspect && (
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full border border-dashed border-amber-400" /> No data &gt;1 min
+              </span>
+            )}
+          </div>
+        )}
+        {approximateCount > 0 && (
           <p
             className="mt-2 pt-1.5 border-t border-line/60 text-[9px] font-mono text-amber-400/90 flex items-center gap-1"
-            title="The backend does not send GPS coordinates yet, so devices are placed near the map center."
+            title="These devices have not sent a GPS fix yet, so they are placed near the map center."
           >
             <Icon name="info" className="text-[12px]" />
-            Approximate positions (no GPS data yet)
+            {approximateCount === markers.length
+              ? "Approximate positions (no GPS data yet)"
+              : `${approximateCount} without GPS fix (approximate position)`}
           </p>
         )}
         </>

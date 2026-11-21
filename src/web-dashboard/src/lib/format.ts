@@ -1,7 +1,7 @@
 // Display formatting for values from Contract C. The backend may omit a field,
 // so every formatter accepts null/undefined and shows a dash instead.
 
-import type { ActivityState } from "../types";
+import type { ActivityState, TravelStatus } from "../types";
 
 const DASH = "—";
 
@@ -66,12 +66,31 @@ export function parseTime(iso: string | null | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
-const ACTIVITY_LABELS: Record<ActivityState, string> = {
+const ACTIVITY_LABELS: Record<TravelStatus, string> = {
   stationary: "Stationary",
   walking: "Walking",
   in_vehicle: "In Vehicle",
+  unknown: "Unknown",
 };
 
-export function formatActivity(state: ActivityState | null | undefined): string {
+export function formatActivity(state: ActivityState | TravelStatus | null | undefined): string {
   return state ? (ACTIVITY_LABELS[state] ?? state) : DASH;
+}
+
+/** Meters per second as km/h, e.g. "40 km/h". */
+export function formatSpeed(speedMps: number | null | undefined): string {
+  return isNum(speedMps) ? `${Math.round(speedMps * 3.6)} km/h` : DASH;
+}
+
+const COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+
+/** Degrees with a compass point, e.g. "274° W". */
+export function formatHeading(degrees: number | null | undefined): string {
+  if (!isNum(degrees)) return DASH;
+  const d = ((degrees % 360) + 360) % 360;
+  return `${Math.round(d)}° ${COMPASS[Math.round(d / 45) % 8]}`;
+}
+
+export function formatCoordinates(lat: number, lon: number): string {
+  return `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
 }
