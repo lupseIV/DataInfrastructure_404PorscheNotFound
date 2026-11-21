@@ -13,9 +13,13 @@ class AppConfig {
 
   static const apiKey = String.fromEnvironment('INGESTION_API_KEY', defaultValue: 'dev-key');
 
-  static const deviceId = String.fromEnvironment(
+  /// Optional build-time override. When empty (the default), each install
+  /// generates and persists its own unique id — see [resolveDeviceId] — so a
+  /// single APK can be handed out and every phone reports as a distinct device.
+  /// Pass --dart-define=DEVICE_ID=fleet-phone-07 to pin a build to a known phone.
+  static const configuredDeviceId = String.fromEnvironment(
     'DEVICE_ID',
-    defaultValue: 'fleet-phone-01',
+    defaultValue: '',
   );
 
   /// How often a batch of 3 readings is captured.

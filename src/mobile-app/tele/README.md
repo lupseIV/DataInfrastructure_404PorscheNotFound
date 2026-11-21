@@ -56,11 +56,19 @@ flutter run \
   --dart-define=DEVICE_ID=fleet-phone-01
 ```
 
-Release APK for the demo:
+`DEVICE_ID` is **optional**: when omitted, each install generates and persists
+its own unique id (`fleet-phone-<hex>`) on first launch, so a single APK can be
+handed out and every phone reports as a distinct device. Pass `DEVICE_ID`
+explicitly only to pin a build to a known phone. The id is shown in the app
+header (tap to copy).
+
+Release APK for the demo (one build for everyone):
 
 ```bash
-flutter build apk --release --dart-define=INGESTION_URL=... --dart-define=INGESTION_API_KEY=... --dart-define=DEVICE_ID=fleet-phone-01
+flutter build apk --release --dart-define=INGESTION_URL=... --dart-define=INGESTION_API_KEY=...
 ```
+
+The APK lands at `build/app/outputs/flutter-apk/app-release.apk`.
 
 Use a **real phone** — emulators return fake/flat sensor data.
 

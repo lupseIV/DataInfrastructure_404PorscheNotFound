@@ -28,6 +28,10 @@ class TelemetryService extends ChangeNotifier {
   double? lastBatteryRatio;
   bool? lastCharging;
 
+  /// Id stamped on every event. Defaults to the build-time override (if any);
+  /// the UI sets this to the resolved per-install id before calling [start].
+  String deviceId = AppConfig.configuredDeviceId;
+
   // Status (shown in UI).
   bool running = false;
   SendStatus status = SendStatus.idle;
@@ -84,7 +88,7 @@ class TelemetryService extends ChangeNotifier {
 
   Future<void> _capture() async {
     final ts = TelemetryEvent.utcNow();
-    final id = AppConfig.deviceId;
+    final id = deviceId;
     final events = <TelemetryEvent>[];
 
     try {
