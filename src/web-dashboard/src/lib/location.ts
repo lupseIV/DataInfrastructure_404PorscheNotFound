@@ -73,3 +73,14 @@ export function getDevicePosition(device: Device, center: [number, number]): Dev
   const [lat, lng] = approximatePosition(device.deviceId, center);
   return { lat, lng, accuracyM: null, approximate: true };
 }
+
+/** Great-circle distance in meters between two WGS-84 points (same formula as the backend). */
+export function haversineM(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const rad = Math.PI / 180;
+  const p1 = lat1 * rad;
+  const p2 = lat2 * rad;
+  const dp = p2 - p1;
+  const dl = (lon2 - lon1) * rad;
+  const a = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+  return 2 * 6_371_000 * Math.asin(Math.min(1, Math.sqrt(a)));
+}

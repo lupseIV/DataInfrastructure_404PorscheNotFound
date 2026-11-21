@@ -122,3 +122,34 @@ export interface DeviceAlerts {
   deviceId: string;
   records: AlertRecord[];
 }
+
+/** One point of GET /api/devices/{deviceId}/path (Contract C #4), oldest first. */
+export interface PathPoint {
+  timestamp: string; // fix time (location.capturedAt)
+  lat: number;
+  lon: number;
+  accuracyM: number | null;
+  heading: DeviceHeading | null;
+  travelStatus: TravelStatus | null;
+  signalLevel: number | null; // 0-4 bars
+  /** More than PATH_GAP_SECONDS (60 s) since the previous point: start a new line here. */
+  gapBefore: boolean;
+}
+
+export interface PathSummary {
+  pointCount: number;
+  distanceM: number; // not counted across gaps
+  durationSeconds: number;
+  maxSpeedMps: number | null;
+}
+
+/** Response of GET /api/devices/{deviceId}/path?minutes=N. */
+export interface DevicePath {
+  deviceId: string;
+  minutes: number;
+  /** Window ending at the device's newest snapshot; null when it has no history. */
+  from: string | null;
+  to: string | null;
+  points: PathPoint[];
+  summary: PathSummary;
+}

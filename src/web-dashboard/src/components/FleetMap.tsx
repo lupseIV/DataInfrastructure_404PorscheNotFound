@@ -1,12 +1,14 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { divIcon, type DivIcon, type Map as LeafletMap } from "leaflet";
-import { Circle, CircleMarker, MapContainer, Marker, TileLayer, Tooltip } from "react-leaflet";
+import { Circle, CircleMarker, MapContainer, Marker, Polyline, TileLayer, Tooltip } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import { config } from "../config";
-import { formatPercent } from "../lib/format";
+import { formatPercent, formatTimeUtc } from "../lib/format";
 import { getDevicePosition } from "../lib/location";
+import { toSegments } from "../lib/path";
+import { NO_SIGNAL_DATA_COLOR, SIGNAL_COLORS } from "../lib/signal";
 import { STATUS_GROUPS, groupInfo, isSuspect, type StatusGroup } from "../lib/status";
-import type { Device } from "../types";
+import type { Device, PathPoint } from "../types";
 import type { DeviceRow } from "./DeviceSidebar";
 import { Icon } from "./Icon";
 
@@ -23,7 +25,13 @@ interface FleetMapProps {
   loadFailed: boolean;
   /** A position to highlight (an event location or a last known position); the map flies to it. */
   focus?: MapFocus | null;
+  /** Route of the selected device (GET .../path), oldest first. */
+  path?: PathPoint[] | null;
+  /** Changes when the user asks to frame the whole route. */
+  fitPathRequest?: number;
 }
+
+const PATH_CASING = "#0b1326";
 
 export interface MapFocus {
   lat: number;
@@ -89,6 +97,8 @@ export function FleetMap({
   filtered,
   loadFailed,
   focus = null,
+  path = null,
+  fitPathRequest = 0,
 }: FleetMapProps) {
   const [map, setMap] = useState<LeafletMap | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -157,6 +167,20 @@ export function FleetMap({
 
   const selectedMarker = markers.find((m) => m.device.deviceId === selectedId);
 
+  const pathPoints = path ?? [];
+  const segments = useMemo(() => toSegments(pathPoints), [pathPoints]);
+  const showPath = selectedMarker !== undefined && pathPoints.length > 0;
+  const pathStart = showPath ? pathPoints[0] : null;
+
+  // Frame the whole route when the user asks for it.
+  useEffect(() => {
+    if (!map || fitPathRequest === 0 || pathPoints.length === 0) return;
+    map.invalidateSize();
+    map.fitBounds(pathPoints.map((pt) => [pt.lat, pt.lon] as [number, number]), { padding: [60, 60], maxZoom: 17 });
+    // Only on request, not on every refresh of the path.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, fitPathRequest]);
+
   return (
     // `isolate` keeps Leaflet's internal z-indexes (400+) from covering the drawer and bottom sheet.
     <div ref={wrapperRef} className="absolute inset-0 isolate">
@@ -174,6 +198,55 @@ export function FleetMap({
           maxZoom={19}
           className={config.mapDarkFilter ? "dark-tiles" : undefined}
         />
+
+        {showPath && (
+          <>
+            {/* Dark casing under each continuous piece so the route reads on any tile. */}
+            {segments.map((seg, i) => (
+              <Polyline
+                key={`case-${i}`}
+                positions={seg.positions}
+                interactive={false}
+                pathOptions={{ color: PATH_CASING, weight: 7, opacity: 0.75, lineCap: "round", lineJoin: "round" }}
+              />
+            ))}
+            {segments.flatMap((seg, i) =>
+              seg.runs.map((run, j) => (
+                <Polyline
+                  key={`run-${i}-${j}`}
+                  positions={run.positions}
+                  pathOptions={{ color: run.color, weight: 4, opacity: 0.95, lineCap: "round", lineJoin: "round" }}
+                >
+                  <Tooltip sticky className="device-label">
+                    {formatTimeUtc(run.from)}–{formatTimeUtc(run.to)} UTC ·{" "}
+                    {typeof run.signalLevel === "number" ? `signal ${run.signalLevel}/4` : "no signal data"}
+                  </Tooltip>
+                </Polyline>
+              )),
+            )}
+            {/* Where the line picks up again after an outage. */}
+            {segments.slice(1).map((seg, i) => (
+              <CircleMarker
+                key={`resume-${i}`}
+                center={seg.positions[0]}
+                radius={3.5}
+                interactive={false}
+                pathOptions={{ color: "#e2e8f0", weight: 1.5, fillColor: PATH_CASING, fillOpacity: 1 }}
+              />
+            ))}
+            {pathStart && (
+              <CircleMarker
+                center={[pathStart.lat, pathStart.lon]}
+                radius={5}
+                pathOptions={{ color: PATH_CASING, weight: 2, fillColor: "#e2e8f0", fillOpacity: 1 }}
+              >
+                <Tooltip direction="top" offset={[0, -6]} className="device-label">
+                  Route start · {formatTimeUtc(pathStart.timestamp)} UTC
+                </Tooltip>
+              </CircleMarker>
+            )}
+          </>
+        )}
 
         {markers.map(({ device, group, position }) => {
           if (device.deviceId === selectedId) return null; // drawn last, on top
@@ -338,6 +411,27 @@ export function FleetMap({
                 <span className="w-2 h-2 rounded-full border border-dashed border-amber-400" /> No data &gt;1 min
               </span>
             )}
+          </div>
+        )}
+        {showPath && (
+          <div className="mt-1.5 pt-1.5 border-t border-line/60 text-[10px] font-mono text-slate-300">
+            <span className="text-slate-400">Route signal</span>
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+              {[
+                { color: SIGNAL_COLORS[4], label: "Good" },
+                { color: SIGNAL_COLORS[1], label: "Weak" },
+                { color: SIGNAL_COLORS[0], label: "None" },
+                { color: NO_SIGNAL_DATA_COLOR, label: "No data" },
+              ].map((item) => (
+                <span key={item.label} className="flex items-center gap-1.5">
+                  <span className="w-3 h-[3px] rounded-full" style={{ background: item.color }} />
+                  {item.label}
+                </span>
+              ))}
+              <span className="flex items-center gap-1.5" title="No points for over a minute: the line is broken there">
+                <span className="w-2 h-2 rounded-full border border-slate-200 bg-surface-deep" /> After a gap
+              </span>
+            </div>
           </div>
         )}
         {approximateCount > 0 && (

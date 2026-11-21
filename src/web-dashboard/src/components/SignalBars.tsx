@@ -1,4 +1,4 @@
-import { formatSignal } from "../lib/signal";
+import { SIGNAL_COLORS, formatSignal } from "../lib/signal";
 import type { NetworkType } from "../types";
 
 interface SignalBarsProps {
@@ -9,13 +9,12 @@ interface SignalBarsProps {
   size?: number;
 }
 
-const COLORS = ["#ef4444", "#f59e0b", "#f59e0b", "#10b981", "#10b981"]; // by level 0..4
 
 /** Four ascending bars, filled up to `level`, colored by strength. Tooltip has the details. */
 export function SignalBars({ level, networkType, dbm, size = 12 }: SignalBarsProps) {
   if (typeof level !== "number") return null;
   const lv = Math.max(0, Math.min(4, Math.round(level)));
-  const color = COLORS[lv];
+  const color = SIGNAL_COLORS[lv];
   const label = formatSignal(lv, networkType, dbm);
   const width = 3;
   const gap = 1.5;

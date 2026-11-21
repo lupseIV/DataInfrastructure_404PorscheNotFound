@@ -17,16 +17,18 @@
 // dropping then lost on 09 and 12, and a presence_offline alert on 12.
 
 import { config } from "../config";
-import { approximatePosition, offsetPosition } from "../lib/location";
+import { approximatePosition, haversineM, offsetPosition } from "../lib/location";
 import type {
   ActivityState,
   AlertRecord,
   AlertStatus,
   Device,
   DeviceAlerts,
+  DevicePath,
   DeviceTelemetry,
   NetworkType,
   HealthSnapshot,
+  PathPoint,
   PresenceState,
   TelemetryRecord,
 } from "../types";
@@ -231,4 +233,87 @@ export function getMockAlerts(deviceId: string, limit: number): DeviceAlerts {
     };
   });
   return { deviceId, records };
+}
+
+// ---- Path (Contract C #4) ----
+
+const PATH_GAP_SECONDS = 60;
+/** Stretches without data [from, to] in seconds before the newest snapshot (signal lost). */
+const PATH_OUTAGES: Record<string, [number, number]> = {
+  "fleet-phone-09": [330, 210],
+  "fleet-phone-10": [270, 170],
+  "fleet-phone-12": [460, 340],
+};
+
+/**
+ * Route of the last `minutes` before the device's newest snapshot, ending at its current
+ * position: moving devices come along their heading with a gentle sway, stationary ones
+ * show GPS jitter. One fix every 10 s, like the snapshots.
+ */
+export function getMockPath(deviceId: string, minutes: number): DevicePath {
+  const profile = PROFILES.find((p) => p.deviceId === deviceId);
+  const device = getMockDevices().find((d) => d.deviceId === deviceId);
+  const empty = { pointCount: 0, distanceM: 0, durationSeconds: 0, maxSpeedMps: null };
+  if (!profile || !device) return { deviceId, minutes, from: null, to: null, points: [], summary: empty };
+
+  const end = Date.parse(device.lastUpdated);
+  const from = new Date(end - minutes * 60_000).toISOString();
+  const to = device.lastUpdated;
+  if (!device.location) return { deviceId, minutes, from, to, points: [], summary: empty };
+
+  const { lat: endLat, lon: endLon } = device.location;
+  const speed = profile.headingDeg === undefined ? 0 : SPEED_MPS[profile.activityState];
+  const heading = profile.headingDeg ?? 0;
+  const outage = PATH_OUTAGES[deviceId];
+  const signalNow = profile.signal[0];
+
+  const points: PathPoint[] = [];
+  for (let back = minutes * 60; back >= 0; back -= SAMPLE_INTERVAL_SECONDS) {
+    if (outage && back <= outage[0] && back > outage[1]) continue;
+    let lat: number;
+    let lon: number;
+    if (speed > 0) {
+      // Back along the heading, swaying sideways (zero sway at the end point).
+      [lat, lon] = offsetPosition(endLat, endLon, speed * back, heading + 180);
+      [lat, lon] = offsetPosition(lat, lon, 60 * Math.sin(back / 90), heading + 90);
+    } else {
+      [lat, lon] = offsetPosition(endLat, endLon, back === 0 ? 0 : 4 * Math.abs(Math.sin(back)), (back * 37) % 360);
+    }
+    // Signal: lower in the minutes before it dropped (09, 10, 12), else as now.
+    const dropping = outage !== undefined && back <= outage[0] + 120;
+    const signalLevel = dropping ? Math.min(signalNow + 1, 4) : Math.min(signalNow + 3, 4);
+    points.push({
+      timestamp: new Date(end - back * 1000).toISOString(),
+      lat,
+      lon,
+      accuracyM: ACCURACY_M[profile.activityState],
+      heading: profile.headingDeg === undefined ? null : { degrees: heading, speedMps: speed },
+      travelStatus: profile.activityState,
+      signalLevel: back < 60 ? signalNow : signalLevel,
+      gapBefore: false,
+    });
+  }
+
+  let distanceM = 0;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    if ((Date.parse(b.timestamp) - Date.parse(a.timestamp)) / 1000 > PATH_GAP_SECONDS) b.gapBefore = true;
+    else distanceM += haversineM(a.lat, a.lon, b.lat, b.lon);
+  }
+  const first = points[0];
+  const last = points[points.length - 1];
+  return {
+    deviceId,
+    minutes,
+    from,
+    to,
+    points,
+    summary: {
+      pointCount: points.length,
+      distanceM: Math.round(distanceM * 10) / 10,
+      durationSeconds: Math.round((Date.parse(last.timestamp) - Date.parse(first.timestamp)) / 1000),
+      maxSpeedMps: profile.headingDeg === undefined ? null : speed,
+    },
+  };
 }
