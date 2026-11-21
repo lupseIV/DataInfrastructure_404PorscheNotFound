@@ -49,7 +49,7 @@ export class TelemetryFunctions extends Construct {
 
     const reserved = props.reservedConcurrency ?? 2;
     const backendCode = lambda.Code.fromAsset(path.join(__dirname, '..', '..', '..', 'src', 'backend'), {
-      exclude: ['__pycache__', '*.pyc', '.venv', 'tests', 'requirements-dev.txt', '.gitignore'],
+      exclude: ['__pycache__', '*.pyc', '.venv', '.idea', 'tests', 'README.md', 'requirements-dev.txt', '.gitignore'],
     });
 
     const createFunction = (name: string, handler: string, timeout: cdk.Duration, environment: Record<string, string>) => {
