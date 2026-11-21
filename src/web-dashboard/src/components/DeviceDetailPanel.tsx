@@ -11,12 +11,16 @@ import {
   formatUtc,
   parseTime,
 } from "../lib/format";
+import type { DeviceAlertsResult } from "../api";
 import { hasGpsFix } from "../lib/location";
+import { formatSignal } from "../lib/signal";
 import { alertStyle, groupInfo, isSuspect, lastSeenOf, type StatusGroup } from "../lib/status";
-import type { Device, TelemetryRecord } from "../types";
+import type { Device, DeviceLocation, TelemetryRecord } from "../types";
 import { BatteryChart } from "./BatteryChart";
+import { DeviceEvents } from "./DeviceEvents";
 import { HistoryTable } from "./HistoryTable";
 import { Icon } from "./Icon";
+import { SignalBars } from "./SignalBars";
 
 interface DeviceDetailPanelProps {
   device: Device;
@@ -25,6 +29,11 @@ interface DeviceDetailPanelProps {
   history: TelemetryRecord[] | null;
   historyLoading: boolean;
   historyError: string | null;
+  alerts: DeviceAlertsResult | null;
+  alertsLoading: boolean;
+  alertsError: string | null;
+  /** Show a position on the map (event location or last known location). */
+  onShowOnMap: (location: DeviceLocation, label: string) => void;
   onClose: () => void;
 }
 
@@ -36,6 +45,10 @@ export function DeviceDetailPanel({
   history,
   historyLoading,
   historyError,
+  alerts,
+  alertsLoading,
+  alertsError,
+  onShowOnMap,
   onClose,
 }: DeviceDetailPanelProps) {
   const g = groupInfo(group);
@@ -45,6 +58,14 @@ export function DeviceDetailPanel({
   const lastSeen = formatAgo(parseTime(lastSeenOf(device)), now);
   const loc = hasGpsFix(device) ? device.location! : null;
   const heading = device.heading ?? null;
+  const hasSignal = typeof device.signalLevel === "number" || !!device.networkType;
+  const lastKnown = device.lastKnownLocation ?? null;
+  const lastCallLabel =
+    device.lastCallType === "battery"
+      ? "Battery last call"
+      : device.lastCallType === "connectivity"
+        ? "Signal lost"
+        : "Last call";
   const connection = offline
     ? { text: "Offline", cls: "text-slate-400" }
     : suspect
@@ -145,6 +166,15 @@ export function DeviceDetailPanel({
               <Row label="Speed / heading" value={`${formatSpeed(heading.speedMps)} · ${formatHeading(heading.degrees)}`} />
             )}
             <Row label="Connection" value={connection.text} valueClass={connection.cls} />
+            {hasSignal && (
+              <div className="flex items-center justify-between gap-2 py-1.5 border-b border-line/40">
+                <span className="text-slate-400 text-[11px]">Network</span>
+                <span className="flex items-center gap-2 font-medium text-[11px] text-slate-200 text-right">
+                  <SignalBars level={device.signalLevel} networkType={device.networkType} dbm={device.signalDbm} />
+                  {formatSignal(device.signalLevel, device.networkType, device.signalDbm)}
+                </span>
+              </div>
+            )}
             <Row label="Last seen" value={formatUtc(lastSeenOf(device))} last />
           </div>
         </Card>
@@ -173,6 +203,42 @@ export function DeviceDetailPanel({
               No GPS fix from this device yet. Its position on the map is approximate.
             </p>
           )}
+          {lastKnown && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5">
+              <div className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-300">
+                <Icon name="share_location" className="text-[14px]" />
+                Last known position · {lastCallLabel}
+              </div>
+              <div className="mt-0.5 text-[10px] font-mono text-slate-300">
+                {formatCoordinates(lastKnown.lat, lastKnown.lon)} · {formatAgo(parseTime(lastKnown.capturedAt), now)}
+              </div>
+              <button
+                type="button"
+                onClick={() => onShowOnMap(lastKnown, `Last known position · ${lastCallLabel}`)}
+                className="mt-1 inline-flex items-center gap-1 text-[10px] font-mono text-blue-400 hover:text-blue-300"
+              >
+                <Icon name="location_on" className="text-[12px]" />
+                Show on map
+              </button>
+            </div>
+          )}
+        </Card>
+
+        {/* Events from the alerts endpoint */}
+        <Card
+          icon="notifications"
+          iconClass="text-red-400"
+          title="Device Events"
+          badge={alerts?.available && alerts.records.length > 0 ? `${alerts.records.length}` : undefined}
+          badgeClass="text-slate-400"
+        >
+          <DeviceEvents
+            alerts={alerts}
+            loading={alertsLoading}
+            error={alertsError}
+            now={now}
+            onShowOnMap={onShowOnMap}
+          />
         </Card>
 
         {/* History */}

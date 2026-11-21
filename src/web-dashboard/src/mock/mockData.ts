@@ -12,14 +12,20 @@
 // fleet-phone-09 has been silent for 75 s, so the server marks it SUSPECT.
 // fleet-phone-04 has no GPS fix yet (location: null), so the map places it approximately.
 // Walking and in-vehicle devices move along their heading, so the map is live.
+// Signal: most phones on cellular or Wi-Fi; fleet-phone-09 and -12 lost their signal.
+// Events (alerts endpoint): battery low on 03 and 06, a battery last call on 06, signal
+// dropping then lost on 09 and 12, and a presence_offline alert on 12.
 
 import { config } from "../config";
 import { approximatePosition, offsetPosition } from "../lib/location";
 import type {
   ActivityState,
+  AlertRecord,
   AlertStatus,
   Device,
+  DeviceAlerts,
   DeviceTelemetry,
+  NetworkType,
   HealthSnapshot,
   PresenceState,
   TelemetryRecord,
@@ -36,21 +42,25 @@ interface MockProfile {
   headingDeg?: number;
   /** No GPS fix yet: location is null. */
   noFix?: boolean;
+  /** Latest signal reading: bars 0-4, dBm, network. */
+  signal: [number, number | null, NetworkType];
+  /** Type of the last "last call" event, if any. */
+  lastCall?: "battery" | "connectivity";
 }
 
 const PROFILES: MockProfile[] = [
-  { deviceId: "fleet-phone-01", secondsSinceUpdate: 3, batteryLevel: 78.5, isCharging: false, activityState: "walking", drainRatePerHour: 9.4, headingDeg: 274 },
-  { deviceId: "fleet-phone-02", secondsSinceUpdate: 4, batteryLevel: 34.0, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 14.8, headingDeg: 95 },
-  { deviceId: "fleet-phone-03", secondsSinceUpdate: 2, batteryLevel: 16.5, isCharging: false, activityState: "stationary", drainRatePerHour: 21.3 },
-  { deviceId: "fleet-phone-04", secondsSinceUpdate: 5, batteryLevel: 92.0, isCharging: false, activityState: "stationary", drainRatePerHour: 4.1, noFix: true },
-  { deviceId: "fleet-phone-05", secondsSinceUpdate: 1, batteryLevel: 58.0, isCharging: false, activityState: "walking", drainRatePerHour: 8.2, headingDeg: 20 },
-  { deviceId: "fleet-phone-06", secondsSinceUpdate: 6, batteryLevel: 14.2, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 11.0, headingDeg: 200 },
-  { deviceId: "fleet-phone-07", secondsSinceUpdate: 2, batteryLevel: 88.0, isCharging: true, activityState: "stationary", drainRatePerHour: 0 },
-  { deviceId: "fleet-phone-08", secondsSinceUpdate: 7, batteryLevel: 64.5, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 7.5, headingDeg: 320 },
-  { deviceId: "fleet-phone-09", secondsSinceUpdate: 75, batteryLevel: 29.5, isCharging: false, activityState: "walking", drainRatePerHour: 10.2, headingDeg: 150 },
-  { deviceId: "fleet-phone-10", secondsSinceUpdate: 4, batteryLevel: 48.0, isCharging: false, activityState: "stationary", drainRatePerHour: 13.4 },
-  { deviceId: "fleet-phone-11", secondsSinceUpdate: 8, batteryLevel: 74.0, isCharging: false, activityState: "walking", drainRatePerHour: 6.8, headingDeg: 60 },
-  { deviceId: "fleet-phone-12", secondsSinceUpdate: 300, batteryLevel: 42.0, isCharging: false, activityState: "stationary", drainRatePerHour: 5.0 },
+  { deviceId: "fleet-phone-01", secondsSinceUpdate: 3, batteryLevel: 78.5, isCharging: false, activityState: "walking", drainRatePerHour: 9.4, headingDeg: 274, signal: [4, -85, "cellular"] },
+  { deviceId: "fleet-phone-02", secondsSinceUpdate: 4, batteryLevel: 34.0, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 14.8, headingDeg: 95, signal: [3, -95, "cellular"] },
+  { deviceId: "fleet-phone-03", secondsSinceUpdate: 2, batteryLevel: 16.5, isCharging: false, activityState: "stationary", drainRatePerHour: 21.3, signal: [4, -55, "wifi"] },
+  { deviceId: "fleet-phone-04", secondsSinceUpdate: 5, batteryLevel: 92.0, isCharging: false, activityState: "stationary", drainRatePerHour: 4.1, noFix: true, signal: [3, -67, "wifi"] },
+  { deviceId: "fleet-phone-05", secondsSinceUpdate: 1, batteryLevel: 58.0, isCharging: false, activityState: "walking", drainRatePerHour: 8.2, headingDeg: 20, signal: [2, -103, "cellular"] },
+  { deviceId: "fleet-phone-06", secondsSinceUpdate: 6, batteryLevel: 9.5, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 11.0, headingDeg: 200, signal: [2, -101, "cellular"], lastCall: "battery" },
+  { deviceId: "fleet-phone-07", secondsSinceUpdate: 2, batteryLevel: 88.0, isCharging: true, activityState: "stationary", drainRatePerHour: 0, signal: [4, -50, "wifi"] },
+  { deviceId: "fleet-phone-08", secondsSinceUpdate: 7, batteryLevel: 64.5, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 7.5, headingDeg: 320, signal: [3, -92, "cellular"] },
+  { deviceId: "fleet-phone-09", secondsSinceUpdate: 75, batteryLevel: 29.5, isCharging: false, activityState: "walking", drainRatePerHour: 10.2, headingDeg: 150, signal: [0, null, "none"], lastCall: "connectivity" },
+  { deviceId: "fleet-phone-10", secondsSinceUpdate: 4, batteryLevel: 48.0, isCharging: false, activityState: "stationary", drainRatePerHour: 13.4, signal: [1, -108, "cellular"] },
+  { deviceId: "fleet-phone-11", secondsSinceUpdate: 8, batteryLevel: 74.0, isCharging: false, activityState: "walking", drainRatePerHour: 6.8, headingDeg: 60, signal: [4, -83, "cellular"] },
+  { deviceId: "fleet-phone-12", secondsSinceUpdate: 300, batteryLevel: 42.0, isCharging: false, activityState: "stationary", drainRatePerHour: 5.0, signal: [0, null, "none"], lastCall: "connectivity" },
 ];
 
 const SAMPLE_INTERVAL_SECONDS = 10; // the phone sends a batch every 10 s
@@ -90,6 +100,13 @@ function liveFields(p: MockProfile, lastUpdated: string, now: number): Partial<D
     travelStatus: p.activityState,
     presenceState: presenceOf(p),
     lastSeenAt: new Date(fixTime + 1000).toISOString(), // server receipt, a second later
+    signalLevel: p.signal[0],
+    signalDbm: p.signal[1],
+    networkType: p.signal[2],
+    lastCallType: p.lastCall ?? null,
+    lastKnownLocation: p.lastCall && !p.noFix
+      ? { lat, lon, accuracyM: ACCURACY_M[p.activityState], capturedAt: lastUpdated }
+      : null,
   };
 }
 
@@ -165,4 +182,50 @@ export function getMockTelemetry(deviceId: string, limit: number): DeviceTelemet
   const count = Math.min(Math.max(1, limit), MAX_RECORDS);
   const records = Array.from({ length: count }, (_, i) => snapshotAt(profile, i, now));
   return { deviceId, records }; // newest first, like the API
+}
+
+/** [seconds ago, partial record] per device, newest first. Positions come from the device. */
+type MockEvent = [number, Omit<AlertRecord, "timestamp" | "receivedAt">];
+
+const EVENTS: Record<string, MockEvent[]> = {
+  "fleet-phone-03": [
+    [480, { alertType: "battery_low", alertStatus: "WARNING", alertReason: "Battery low", batteryLevel: 0.2, networkType: "wifi" }],
+  ],
+  "fleet-phone-06": [
+    [70, { alertType: "battery_last_call", alertStatus: "CRITICAL", alertReason: "Battery last call", batteryLevel: 0.1, pendingEventCount: 0 }],
+    [540, { alertType: "battery_low", alertStatus: "WARNING", alertReason: "Battery low", batteryLevel: 0.2 }],
+  ],
+  "fleet-phone-09": [
+    [80, { alertType: "connectivity_last_call", alertStatus: "OK", alertReason: null, signalLevel: 0, previousSignalLevel: 1, signalDbm: -118, networkType: "none", batteryLevel: 0.3, pendingEventCount: 3 }],
+    [150, { alertType: "connectivity_degraded", alertStatus: "OK", alertReason: null, signalLevel: 1, previousSignalLevel: 3, signalDbm: -109, networkType: "cellular", batteryLevel: 0.3, pendingEventCount: 0 }],
+  ],
+  "fleet-phone-10": [
+    [240, { alertType: "connectivity_degraded", alertStatus: "OK", alertReason: null, signalLevel: 1, previousSignalLevel: 3, signalDbm: -108, networkType: "cellular", batteryLevel: 0.48, pendingEventCount: 0 }],
+  ],
+  "fleet-phone-12": [
+    [60, { alertType: "presence_offline", alertStatus: "WARNING", alertReason: "Silent after connectivity last call (signal lost)" }],
+    [330, { alertType: "connectivity_last_call", alertStatus: "OK", alertReason: null, signalLevel: 0, previousSignalLevel: 2, signalDbm: -121, networkType: "none", batteryLevel: 0.42, pendingEventCount: 5 }],
+    [400, { alertType: "connectivity_degraded", alertStatus: "OK", alertReason: null, signalLevel: 2, previousSignalLevel: 4, signalDbm: -104, networkType: "cellular", batteryLevel: 0.43, pendingEventCount: 0 }],
+  ],
+};
+
+const LAST_CALLS = new Set(["battery_last_call", "connectivity_last_call"]);
+
+export function getMockAlerts(deviceId: string, limit: number): DeviceAlerts {
+  const device = getMockDevices().find((d) => d.deviceId === deviceId);
+  const events = EVENTS[deviceId] ?? [];
+  const now = Date.now();
+  const records: AlertRecord[] = events.slice(0, Math.max(1, limit)).map(([ago, e]) => {
+    const location = device?.location ?? null;
+    return {
+      ...e,
+      timestamp: new Date(now - ago * 1000).toISOString(),
+      receivedAt: new Date(now - ago * 1000 + 1500).toISOString(),
+      travelStatus: device?.travelStatus ?? "unknown",
+      heading: device?.heading ?? null,
+      location,
+      lastKnownLocation: LAST_CALLS.has(e.alertType) ? location : null,
+    };
+  });
+  return { deviceId, records };
 }

@@ -2,6 +2,7 @@ import { formatPercent } from "../lib/format";
 import { groupInfo, isSuspect, type StatusGroup } from "../lib/status";
 import type { Device } from "../types";
 import { Icon } from "./Icon";
+import { SignalBars } from "./SignalBars";
 
 export interface DeviceRow {
   device: Device;
@@ -166,14 +167,24 @@ export function DeviceSidebar({
                       </span>
                     )}
                   </div>
-                  {offline ? (
-                    <span className="font-mono text-[11px] font-bold text-slate-400">Offline</span>
-                  ) : (
-                    <span className={`flex items-center gap-0.5 font-mono text-[11px] font-bold ${g.text}`}>
-                      {device.isCharging && <Icon name="bolt" className="text-[13px]" />}
-                      {formatPercent(device.batteryLevel)}
-                    </span>
-                  )}
+                  <span className="flex items-center gap-1.5 shrink-0">
+                    {!offline && (
+                      <SignalBars
+                        level={device.signalLevel}
+                        networkType={device.networkType}
+                        dbm={device.signalDbm}
+                        size={10}
+                      />
+                    )}
+                    {offline ? (
+                      <span className="font-mono text-[11px] font-bold text-slate-400">Offline</span>
+                    ) : (
+                      <span className={`flex items-center gap-0.5 font-mono text-[11px] font-bold ${g.text}`}>
+                        {device.isCharging && <Icon name="bolt" className="text-[13px]" />}
+                        {formatPercent(device.batteryLevel)}
+                      </span>
+                    )}
+                  </span>
                 </div>
                 <div className="w-full h-1 rounded-full bg-surface-deep overflow-hidden">
                   <div className={`h-full rounded-full ${g.bar}`} style={{ width: `${level}%` }} />

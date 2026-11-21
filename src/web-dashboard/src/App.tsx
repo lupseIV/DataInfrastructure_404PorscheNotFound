@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
-import { getDeviceTelemetry, getDevices } from "./api";
+import { getDeviceAlerts, getDeviceTelemetry, getDevices } from "./api";
 import { ConnectionBanner } from "./components/ConnectionBanner";
 import { DeviceDetailPanel } from "./components/DeviceDetailPanel";
 import { DeviceSidebar, type DeviceRow } from "./components/DeviceSidebar";
-import { FleetMap } from "./components/FleetMap";
+import { FleetMap, type MapFocus } from "./components/FleetMap";
 import { Icon } from "./components/Icon";
 import { StatusFilterBar } from "./components/StatusFilterBar";
 import { TopBar } from "./components/TopBar";
@@ -21,6 +21,8 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  // Position highlighted on the map from the detail panel (event or last known position).
+  const [mapFocus, setMapFocus] = useState<MapFocus | null>(null);
 
   const rows: DeviceRow[] = useMemo(
     () =>
@@ -56,9 +58,22 @@ export default function App() {
     selectedId,
   );
 
+  // Battery and connectivity events of the open device (alerts endpoint).
+  const alertsPoll = usePolling(
+    (signal) => getDeviceAlerts(selectedId!, config.historyLimit, signal),
+    config.pollIntervalMs,
+    selectedId,
+  );
+
   const selectDevice = (deviceId: string) => {
     setSelectedId(deviceId);
+    setMapFocus(null);
     setMobileSidebarOpen(false);
+  };
+
+  const closeDetails = () => {
+    setSelectedId(null);
+    setMapFocus(null);
   };
 
   return (
@@ -111,6 +126,7 @@ export default function App() {
               loading={devicesPoll.loading}
               filtered={statusFilter !== null && rows.length > 0}
               loadFailed={loadFailed}
+              focus={mapFocus}
             />
             {sidebarCollapsed && (
               <button
@@ -133,7 +149,11 @@ export default function App() {
             history={historyPoll.data?.records ?? null}
             historyLoading={historyPoll.loading}
             historyError={historyPoll.error}
-            onClose={() => setSelectedId(null)}
+            alerts={alertsPoll.data}
+            alertsLoading={alertsPoll.loading}
+            alertsError={alertsPoll.error}
+            onShowOnMap={(location, label) => setMapFocus({ lat: location.lat, lng: location.lon, label })}
+            onClose={closeDetails}
           />
         )}
       </div>

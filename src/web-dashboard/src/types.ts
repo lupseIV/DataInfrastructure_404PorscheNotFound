@@ -21,6 +21,9 @@ export type TravelStatus = ActivityState | "unknown";
 /** Server-side liveness (Contract F): SUSPECT after 60 s of silence, OFFLINE after the grace period. */
 export type PresenceState = "ONLINE" | "SUSPECT" | "OFFLINE";
 
+/** Network the phone is on (Contract A `signal_strength.networkType`). */
+export type NetworkType = "wifi" | "cellular" | "none";
+
 export interface DeviceLocation {
   lat: number;
   lon: number;
@@ -44,6 +47,15 @@ export interface Device extends HealthSnapshot {
   travelStatus?: TravelStatus | null;
   presenceState?: PresenceState | null;
   lastSeenAt?: string | null; // server receipt time of the last event
+
+  // NOT in Contract C yet (proposal). Named like the fields the backend already stores:
+  // `signalLevel`, `lastKnownLocation`, `lastCallType` on the latest item (Contracts E1/E2,
+  // D2), and `signalDbm` / `networkType` as in the E1/E2 bodies. Shown when present.
+  signalLevel?: number | null; // 0-4 bars
+  signalDbm?: number | null;
+  networkType?: NetworkType | null;
+  lastKnownLocation?: DeviceLocation | null; // position at the last "last call"
+  lastCallType?: "battery" | "connectivity" | null;
 }
 
 /** One record of GET /api/devices/{deviceId}/telemetry. */
@@ -55,4 +67,43 @@ export interface TelemetryRecord extends HealthSnapshot {
 export interface DeviceTelemetry {
   deviceId: string;
   records: TelemetryRecord[];
+}
+
+/** Event types stored in the alerts table (Contracts D1–E2) and presence alerts (Contract F). */
+export type AlertType =
+  | "battery_low"
+  | "battery_last_call"
+  | "connectivity_degraded"
+  | "connectivity_last_call"
+  | "presence_offline"
+  | "presence_recovered";
+
+/**
+ * One record of GET /api/devices/{deviceId}/alerts (Contract C §3, documented, not built yet).
+ * The contract lists the first fields; the rest are the event body fields the backend stores
+ * on the same row, so they are optional.
+ */
+export interface AlertRecord {
+  timestamp: string; // device time of the event
+  alertType: AlertType;
+  receivedAt?: string | null; // server time
+  /** Contract example shows a percent (9.0); stored events hold a 0–1 ratio. Both are handled. */
+  batteryLevel?: number | null;
+  travelStatus?: TravelStatus | null;
+  location?: DeviceLocation | null;
+  lastKnownLocation?: DeviceLocation | null;
+  heading?: DeviceHeading | null;
+  alertStatus?: AlertStatus | null;
+  alertReason?: string | null;
+  signalLevel?: number | null;
+  previousSignalLevel?: number | null;
+  signalDbm?: number | null;
+  networkType?: NetworkType | null;
+  pendingEventCount?: number | null;
+}
+
+/** Response of GET /api/devices/{deviceId}/alerts (records newest first). */
+export interface DeviceAlerts {
+  deviceId: string;
+  records: AlertRecord[];
 }
