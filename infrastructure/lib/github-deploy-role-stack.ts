@@ -1,7 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
-import { siteBucketName } from './constructs/web-hosting';
+import { siteBucketName } from './naming';
 
 export interface GithubDeployRoleStackProps extends cdk.StackProps {
   /** Prefix used for resource names, e.g. "fleet-telemetry". */

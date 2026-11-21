@@ -1,0 +1,137 @@
+name: Deploy role update
+
+# Updates GithubDeployRoleStack (the IAM role every other workflow uses) with that same role,
+# e.g. to grant a permission a new workflow needs. Manual only, from main:
+#   1. diff:   shows what would change in the run summary
+#   2. deploy: waits for approval on the "deploy-role" environment, then deploys
+#   3. verify: logs in again with a fresh token to prove the role still works
+#
+# It cannot repair a role GitHub can no longer log in to (broken trust policy): that needs an
+# admin, in the IAM console or with the "AWS bootstrap" workflow. See docs/infrastructure.md.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  NODE_VERSION: '22'
+  STACK_ID: GithubDeployRoleStack
+
+jobs:
+  diff:
+    name: Show changes
+    # The role only trusts tokens issued for main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # needed to request the OIDC token for AWS
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    defaults:
+      run:
+        working-directory: infrastructure
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: infrastructure/package-lock.json
+
+      - run: npm ci
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: cdk diff
+        id: diff
+        run: |
+          set -o pipefail
+          npx cdk diff "$STACK_ID" --exclusively 2>&1 | tee "$RUNNER_TEMP/diff.txt"
+          if grep -qE "There were no differences|Number of stacks with differences: 0" "$RUNNER_TEMP/diff.txt"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "## $STACK_ID diff"
+            echo '```'
+            sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/diff.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy (needs approval)
+    needs: diff
+    if: needs.diff.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    # Add required reviewers to this environment (Settings -> Environments) so the deploy
+    # waits for someone to read the diff and click "Approve".
+    environment: deploy-role
+    # Never run next to the stack deploys that rely on this role.
+    concurrency:
+      group: aws-backend-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: infrastructure
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: infrastructure/package-lock.json
+
+      - run: npm ci
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy GithubDeployRoleStack
+        run: npx cdk deploy "$STACK_ID" --exclusively --require-approval never
+
+  verify:
+    name: Check the role still works
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Log in with a fresh token
+        id: login
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Result
+        env:
+          LOGIN: ${{ steps.login.outcome }}
+        run: |
+          if [ "$LOGIN" != "success" ]; then
+            {
+              echo "## ❌ The deploy role no longer accepts GitHub's token"
+              echo "Fix the trust policy as an admin (IAM console -> Roles -> fleet-telemetry-github-deploy"
+              echo "-> Trust relationships), or run **AWS bootstrap** with a temporary admin key."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          aws sts get-caller-identity --query Arn --output text
+          echo "## ✅ Deploy role updated and still usable" >> "$GITHUB_STEP_SUMMARY"

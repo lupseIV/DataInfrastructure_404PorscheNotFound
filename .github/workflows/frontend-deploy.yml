@@ -20,7 +20,8 @@ permissions:
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
-  STACK_NAME: fleet-telemetry-stack
+  WEB_STACK: fleet-telemetry-web # bucket, CloudFront
+  API_STACK: fleet-telemetry-api # API base URL
   NODE_VERSION: '22'
   APP_DIR: src/web-dashboard
   BUILD_DIR: dist
@@ -83,14 +84,14 @@ jobs:
       - name: Read stack outputs
         id: stack
         run: |
-          output() {
-            aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
-              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
+          output() { # output <stack> <key>
+            aws cloudformation describe-stacks --stack-name "$1" \
+              --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue" --output text
           }
-          echo "api_url=$(output ApiBaseUrl)" >> "$GITHUB_OUTPUT"
-          echo "bucket=$(output SiteBucketName)" >> "$GITHUB_OUTPUT"
-          echo "distribution=$(output DistributionId)" >> "$GITHUB_OUTPUT"
-          echo "dashboard_url=$(output DashboardUrl)" >> "$GITHUB_OUTPUT"
+          echo "api_url=$(output "$API_STACK" ApiBaseUrl)" >> "$GITHUB_OUTPUT"
+          echo "bucket=$(output "$WEB_STACK" SiteBucketName)" >> "$GITHUB_OUTPUT"
+          echo "distribution=$(output "$WEB_STACK" DistributionId)" >> "$GITHUB_OUTPUT"
+          echo "dashboard_url=$(output "$WEB_STACK" DashboardUrl)" >> "$GITHUB_OUTPUT"
 
       - run: npm ci
 

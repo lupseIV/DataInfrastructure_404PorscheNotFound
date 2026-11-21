@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
+import { queueNames } from '../naming';
 
 export interface TelemetryQueueProps {
   /** Prefix used for queue names, e.g. "fleet-telemetry". */
@@ -40,11 +41,12 @@ export class TelemetryQueue extends Construct {
   constructor(scope: Construct, id: string, props: TelemetryQueueProps) {
     super(scope, id);
 
+    const names = queueNames(props.projectName);
     const processorTimeout = props.processorTimeout ?? cdk.Duration.seconds(30);
 
     this.deadLetterQueue = new sqs.Queue(this, 'DeadLetterQueue', {
       // FIFO queues require a FIFO DLQ; names must end in ".fifo".
-      queueName: `${props.projectName}-events-dlq.fifo`,
+      queueName: names.deadLetter,
       fifo: true,
       retentionPeriod: cdk.Duration.days(14),
       encryption: sqs.QueueEncryption.SQS_MANAGED,
@@ -53,7 +55,7 @@ export class TelemetryQueue extends Construct {
     });
 
     this.queue = new sqs.Queue(this, 'EventsQueue', {
-      queueName: `${props.projectName}-events.fifo`,
+      queueName: names.events,
       fifo: true,
       contentBasedDeduplication: true,
       visibilityTimeout: cdk.Duration.seconds(processorTimeout.toSeconds() * 6),
