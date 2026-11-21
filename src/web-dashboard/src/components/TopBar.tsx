@@ -39,7 +39,7 @@ export function TopBar({
           <div className="w-8 h-8 shrink-0 rounded-lg bg-primary/15 border border-primary/40 flex items-center justify-center text-primary">
             <Icon name="radar" className="text-[20px]" />
           </div>
-          <span className="font-bold text-base tracking-tight text-white">FleetPulse</span>
+          <span className="font-bold text-base tracking-tight text-white whitespace-nowrap">FleetPulse</span>
           <span className="hidden sm:inline text-xs text-muted">/</span>
           <span className="hidden sm:inline text-xs font-medium text-slate-300 truncate">
             Fleet Health Dashboard
@@ -54,18 +54,21 @@ export function TopBar({
         {isMock && (
           <span
             title="Showing built-in sample data. Set apiBaseUrl in config.json to use the real API."
-            className="px-2 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-[10px] font-mono font-semibold uppercase tracking-wider text-amber-400"
+            className="shrink-0 whitespace-nowrap px-2 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-[10px] font-mono font-semibold uppercase tracking-wider text-amber-400"
           >
-            Mock data
+            Mock<span className="hidden sm:inline"> data</span>
           </span>
         )}
       </div>
 
-      <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-low border border-line shrink-0">
+      <div
+        title={hasError ? "Connection problem" : updatedText}
+        className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-low border border-line shrink-0"
+      >
         <span
           className={`w-2 h-2 rounded-full ${hasError ? "bg-red-500" : "bg-primary animate-pulse"}`}
         />
-        <span className="text-xs font-medium text-slate-300 whitespace-nowrap">
+        <span className="hidden sm:inline text-xs font-medium text-slate-300 whitespace-nowrap">
           {hasError ? "Connection problem" : updatedText}
         </span>
         <button

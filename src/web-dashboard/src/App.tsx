@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { getDeviceTelemetry, getDevices } from "./api";
+import { ConnectionBanner } from "./components/ConnectionBanner";
 import { DeviceDetailPanel } from "./components/DeviceDetailPanel";
 import { DeviceSidebar, type DeviceRow } from "./components/DeviceSidebar";
 import { FleetMap } from "./components/FleetMap";
@@ -29,6 +30,8 @@ export default function App() {
       })),
     [devicesPoll.data, now],
   );
+
+  const loadFailed = devicesPoll.error !== null && devicesPoll.data === null;
 
   const counts = useMemo(() => countByGroup(rows.map((r) => r.group)), [rows]);
   const onlineCount = rows.length - counts.offline;
@@ -70,6 +73,14 @@ export default function App() {
         onToggleSidebar={() => setMobileSidebarOpen((open) => !open)}
       />
 
+      {devicesPoll.error && (
+        <ConnectionBanner
+          error={devicesPoll.error}
+          lastUpdatedAt={devicesPoll.updatedAt}
+          onRetry={devicesPoll.refresh}
+        />
+      )}
+
       <div className="flex-1 min-h-0 w-full flex relative overflow-hidden">
         <DeviceSidebar
           rows={listRows}
@@ -80,6 +91,7 @@ export default function App() {
           selectedId={selectedId}
           onSelect={selectDevice}
           loading={devicesPoll.loading}
+          loadFailed={loadFailed}
           collapsed={sidebarCollapsed}
           onCollapse={() => setSidebarCollapsed(true)}
           mobileOpen={mobileSidebarOpen}
@@ -98,6 +110,7 @@ export default function App() {
               zoom={config.mapZoom}
               loading={devicesPoll.loading}
               filtered={statusFilter !== null && rows.length > 0}
+              loadFailed={loadFailed}
             />
             {sidebarCollapsed && (
               <button

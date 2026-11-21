@@ -19,6 +19,8 @@ interface FleetMapProps {
   loading: boolean;
   /** True when a status filter hides every device. */
   filtered: boolean;
+  /** The device list could not be loaded and there is no older data to show. */
+  loadFailed: boolean;
 }
 
 const MARKER_BORDER = "#0b1326";
@@ -32,10 +34,21 @@ const LEGEND_LABELS: Record<StatusGroup, string> = {
   offline: "Offline (>30s)",
 };
 
-export function FleetMap({ rows, selectedDevice, onSelect, center, zoom, loading, filtered }: FleetMapProps) {
+export function FleetMap({
+  rows,
+  selectedDevice,
+  onSelect,
+  center,
+  zoom,
+  loading,
+  filtered,
+  loadFailed,
+}: FleetMapProps) {
   const [map, setMap] = useState<LeafletMap | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const fittedOnce = useRef(false);
+  // Legend starts folded on phones so it doesn't cover the map.
+  const [legendOpen, setLegendOpen] = useState(() => window.innerWidth >= 640);
 
   const markers = useMemo(
     () =>
@@ -91,7 +104,8 @@ export function FleetMap({ rows, selectedDevice, onSelect, center, zoom, loading
   const selectedMarker = markers.find((m) => m.device.deviceId === selectedId);
 
   return (
-    <div ref={wrapperRef} className="absolute inset-0">
+    // `isolate` keeps Leaflet's internal z-indexes (400+) from covering the drawer and bottom sheet.
+    <div ref={wrapperRef} className="absolute inset-0 isolate">
       <MapContainer
         ref={setMap}
         center={center}
@@ -185,12 +199,22 @@ export function FleetMap({ rows, selectedDevice, onSelect, center, zoom, loading
 
       {/* Legend (bottom left) */}
       <div className="absolute bottom-3 left-3 z-[1000] bg-surface/90 backdrop-blur border border-line rounded-lg p-2.5 shadow-lg max-w-[calc(100%-1.5rem)]">
-        <div className="flex items-center justify-between gap-4 mb-1.5">
+        <button
+          type="button"
+          onClick={() => setLegendOpen((open) => !open)}
+          aria-expanded={legendOpen}
+          className={`w-full flex items-center justify-between gap-4 ${legendOpen ? "mb-1.5" : ""}`}
+        >
           <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-semibold">
             Telemetry Legend
           </span>
-          <span className="text-[9px] font-mono text-primary">{markers.length} PINS</span>
-        </div>
+          <span className="flex items-center gap-1 text-[9px] font-mono text-primary">
+            {markers.length} PINS
+            <Icon name={legendOpen ? "expand_more" : "expand_less"} className="text-[14px] text-slate-400" />
+          </span>
+        </button>
+        {legendOpen && (
+        <>
         <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px] font-mono">
           {STATUS_GROUPS.map((g) => (
             <div key={g.id} className="flex items-center gap-1.5">
@@ -208,15 +232,32 @@ export function FleetMap({ rows, selectedDevice, onSelect, center, zoom, loading
             Approximate positions (no GPS data yet)
           </p>
         )}
+        </>
+        )}
       </div>
 
-      {/* Empty states */}
+      {/* Loading and empty states */}
+      {loading && markers.length === 0 && (
+        <div className="absolute inset-0 z-[1000] flex items-center justify-center pointer-events-none">
+          <div className="px-4 py-3 rounded-lg bg-surface/90 border border-line text-xs font-mono text-slate-300 shadow-lg flex items-center gap-2">
+            <Icon name="progress_activity" className="text-[18px] text-primary animate-spin" />
+            Loading devices…
+          </div>
+        </div>
+      )}
       {!loading && markers.length === 0 && (
         <div className="absolute inset-0 z-[1000] flex items-center justify-center pointer-events-none">
           <div className="px-4 py-3 rounded-lg bg-surface/90 border border-line text-center shadow-lg">
-            <Icon name={filtered ? "filter_alt_off" : "satellite_alt"} className="text-[22px] text-slate-400" />
+            <Icon
+              name={loadFailed ? "cloud_off" : filtered ? "filter_alt_off" : "satellite_alt"}
+              className="text-[22px] text-slate-400"
+            />
             <p className="mt-1 text-xs text-slate-300">
-              {filtered ? "No devices in this group." : "No devices have reported yet."}
+              {loadFailed
+                ? "Could not load devices."
+                : filtered
+                  ? "No devices in this group."
+                  : "No devices have reported yet."}
             </p>
           </div>
         </div>

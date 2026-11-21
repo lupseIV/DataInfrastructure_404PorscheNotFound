@@ -17,6 +17,8 @@ interface DeviceSidebarProps {
   selectedId: string | null;
   onSelect: (deviceId: string) => void;
   loading: boolean;
+  /** The device list could not be loaded and there is no older data to show. */
+  loadFailed: boolean;
   /** Desktop: panel folded away. */
   collapsed: boolean;
   onCollapse: () => void;
@@ -34,6 +36,7 @@ export function DeviceSidebar({
   selectedId,
   onSelect,
   loading,
+  loadFailed,
   collapsed,
   onCollapse,
   mobileOpen,
@@ -118,7 +121,11 @@ export function DeviceSidebar({
 
           {!loading && rows.length === 0 && (
             <p className="p-3 text-[11px] font-mono text-slate-400">
-              {totalCount === 0 ? "No devices have reported yet." : "No devices match this filter."}
+              {loadFailed
+                ? "Could not load devices."
+                : totalCount === 0
+                  ? "No devices have reported yet."
+                  : "No devices match this filter."}
             </p>
           )}
 
