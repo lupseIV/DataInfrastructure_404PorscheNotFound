@@ -72,7 +72,10 @@ class TelemetryService extends ChangeNotifier with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
 
     // Raw accelerometer INCLUDING gravity (= accelerationIncludingGravity on web).
-    _accelSub = accelerometerEventStream(samplingPeriod: SensorInterval.uiInterval)
+    // normalInterval (~200ms) instead of uiInterval (~60fps): we only sample
+    // the latest value every few seconds, so a high-rate stream just wakes the
+    // isolate and churns the UI for nothing.
+    _accelSub = accelerometerEventStream(samplingPeriod: SensorInterval.normalInterval)
         .listen((e) => lastAccel = e, onError: (_) {});
 
     // Charging changes are sent immediately, not only on the timer.

@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "skills": {
+    "flutter-improve-design": {
+      "source": "kamranbekirovyz/skills",
+      "commit": "136d2c480eb5157e6d1c228f36e63cf9ea7e05c9",
+      "sourceType": "github",
+      "skillPath": "flutter-improve-design/SKILL.md",
+      "computedHash": "d521db7a1389a9e75b9561dabc74e08a3dc5fb190d3593d50e9397fe2ecad7ca"
+    }
+  }
+}
