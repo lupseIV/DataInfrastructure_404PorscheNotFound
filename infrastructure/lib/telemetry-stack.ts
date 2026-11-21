@@ -17,7 +17,8 @@ export interface TelemetryStackProps extends cdk.StackProps {
   /**
    * Browser origin allowed by CORS. Override for local development,
    * e.g. "http://localhost:5173" or "*".
-   * @default - the CloudFront URL that hosts the dashboard and the mobile app
+   * The mobile app is a native APK and doesn't need CORS.
+   * @default - the CloudFront URL that hosts the web dashboard
    */
   readonly allowedOrigin?: string;
 }
@@ -70,13 +71,9 @@ export class TelemetryStack extends cdk.Stack {
       value: `${this.web.origin}/dashboard/`,
       description: 'Web dashboard',
     });
-    new cdk.CfnOutput(this, 'MobileAppUrl', {
-      value: `${this.web.origin}/mobile/`,
-      description: 'Mobile web app (open on the phone)',
-    });
     new cdk.CfnOutput(this, 'SiteBucketName', {
       value: this.web.bucket.bucketName,
-      description: 'Upload builds to s3://<bucket>/dashboard/ and s3://<bucket>/mobile/',
+      description: 'The dashboard build is uploaded to s3://<bucket>/dashboard/',
     });
     new cdk.CfnOutput(this, 'DistributionId', {
       value: this.web.distribution.distributionId,
@@ -88,7 +85,7 @@ export class TelemetryStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, 'ApiBaseUrl', {
       value: this.api.baseUrl,
-      description: 'Base URL for the apps (VITE_API_BASE_URL); routes start with /api/...',
+      description: 'Base URL for the dashboard and the mobile app; routes start with /api/...',
     });
     new cdk.CfnOutput(this, 'IngestionApiKeyId', {
       value: this.api.ingestionApiKey.keyId,

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
+import { GithubDeployRoleStack } from '../lib/github-deploy-role-stack';
 import { TelemetryStack } from '../lib/telemetry-stack';
 
 const app = new cdk.App();
@@ -19,6 +20,18 @@ new TelemetryStack(app, 'TelemetryStack', {
   projectName,
   lambdaReservedConcurrency,
   allowedOrigin,
+});
+
+// One-time setup (deployed manually): IAM role that GitHub Actions uses to run `cdk deploy`.
+new GithubDeployRoleStack(app, 'GithubDeployRoleStack', {
+  stackName: `${projectName}-github-deploy`,
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region,
+  },
+  projectName,
+  githubRepo: app.node.tryGetContext('githubRepo'),
+  existingOidcProviderArn: app.node.tryGetContext('githubOidcProviderArn'),
 });
 
 cdk.Tags.of(app).add('project', projectName);

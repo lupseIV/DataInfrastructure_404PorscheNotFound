@@ -1,0 +1,86 @@
+name: Lambda deploy
+
+# Updates only the code of the existing Lambda functions (no CloudFormation run).
+# The functions themselves are created by infra-deploy.yml.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/backend/**'
+      - '.github/workflows/lambda-deploy.yml'
+  pull_request:
+    paths:
+      - 'src/backend/**'
+      - '.github/workflows/lambda-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+  PROJECT_NAME: fleet-telemetry
+  PYTHON_VERSION: '3.13'
+  FUNCTIONS: ingest processor query
+
+jobs:
+  check:
+    name: Check Python code
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: src/backend
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Compile handlers
+        run: python -m compileall -q handlers
+
+      - name: Run tests
+        if: hashFiles('src/backend/tests/**/*.py') != ''
+        run: |
+          pip install -r requirements-dev.txt pytest
+          python -m pytest tests
+
+  deploy:
+    name: Deploy Lambda code
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    # Shared with infra-deploy.yml so the two never update the functions at the same time.
+    concurrency:
+      group: aws-backend-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # needed to request the OIDC token for AWS
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Package code
+        working-directory: src/backend
+        # Same layout as the CDK asset: handlers/ at the root of the zip.
+        run: zip -r "$RUNNER_TEMP/backend.zip" handlers -x '*__pycache__*' '*.pyc'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update functions
+        run: |
+          for fn in $FUNCTIONS; do
+            name="$PROJECT_NAME-$fn"
+            echo "Updating $name"
+            aws lambda update-function-code --function-name "$name" \
+              --zip-file "fileb://$RUNNER_TEMP/backend.zip" --query LastUpdateStatus --output text
+          done
+          for fn in $FUNCTIONS; do
+            aws lambda wait function-updated-v2 --function-name "$PROJECT_NAME-$fn"
+            echo "- $PROJECT_NAME-$fn updated" >> "$GITHUB_STEP_SUMMARY"
+          done

@@ -5,7 +5,12 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
 
 /** Apps served by the distribution, each from its own prefix in the bucket. */
-export const WEB_APPS = ['dashboard', 'mobile'] as const;
+export const WEB_APPS = ['dashboard'] as const;
+
+/** Site bucket name; fixed so the GitHub deploy role can be scoped to it. */
+export function siteBucketName(projectName: string, account: string, region: string): string {
+  return `${projectName}-site-${account}-${region}`;
+}
 
 export interface WebHostingProps {
   /** Prefix used for resource names, e.g. "fleet-telemetry". */
@@ -13,18 +18,16 @@ export interface WebHostingProps {
 }
 
 /**
- * Static hosting for the web dashboard and the mobile web app (PWA).
+ * Static hosting for the web dashboard.
+ * (The mobile app is a native APK and is not hosted here.)
  *
- * One private S3 bucket behind one CloudFront distribution (HTTPS, required by the
- * phone's motion and battery APIs):
+ * One private S3 bucket behind one CloudFront distribution (HTTPS):
  *
  *   https://<domain>/            -> redirects to /dashboard/
  *   https://<domain>/dashboard/  -> s3://<bucket>/dashboard/   (build of src/web-dashboard)
- *   https://<domain>/mobile/     -> s3://<bucket>/mobile/      (build of src/mobile-app)
  *
- * Both apps share one origin, so a single CORS origin on the API covers both.
  * Paths without a file extension are served the app's index.html, so client-side
- * routing works. Files are uploaded by the CI/CD pipeline, not by CDK.
+ * routing works. Files are uploaded by the frontend deploy workflow, not by CDK.
  */
 export class WebHosting extends Construct {
   public readonly bucket: s3.Bucket;
@@ -33,7 +36,10 @@ export class WebHosting extends Construct {
   constructor(scope: Construct, id: string, props: WebHostingProps) {
     super(scope, id);
 
+    const stack = cdk.Stack.of(this);
+
     this.bucket = new s3.Bucket(this, 'SiteBucket', {
+      bucketName: siteBucketName(props.projectName, stack.account, stack.region),
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
@@ -50,7 +56,7 @@ export class WebHosting extends Construct {
     });
 
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
-      comment: `${props.projectName} web apps`,
+      comment: `${props.projectName} web dashboard`,
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(this.bucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
