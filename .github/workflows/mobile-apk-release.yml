@@ -137,14 +137,18 @@ jobs:
             "$out"
           rm -f "$keystore"
 
-          # Exactly one signer, and it is the release key, not the debug key.
+          # Exactly one signing certificate, and it is the release key, not the debug key.
+          # apksigner prints "Signer #1 certificate DN: ..." or, in newer build-tools,
+          # "V3.0 Signer: certificate DN: ..." (one line per scheme for the same certificate),
+          # so compare the distinct certificate digests instead of counting lines.
           certs=$("$tools/apksigner" verify --print-certs "$out")
           echo "$certs"
-          if [ "$(grep -c '^Signer #[0-9]* certificate DN' <<< "$certs")" != 1 ] || grep -q 'CN=Android Debug' <<< "$certs"; then
+          digests=$(sed -n 's/.*certificate SHA-256 digest: //p' <<< "$certs" | sort -u)
+          if [ "$(grep -c . <<< "$digests" || true)" != 1 ] || grep -q 'CN=Android Debug' <<< "$certs"; then
             echo "::error::The APK is not signed only with the release key."
             exit 1
           fi
-          echo "sha256=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' <<< "$certs")" >> "$GITHUB_OUTPUT"
+          echo "sha256=$digests" >> "$GITHUB_OUTPUT"
           echo "apk=$out" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
