@@ -1,0 +1,115 @@
+name: Frontend deploy
+
+# Builds the web dashboard, uploads it to the site bucket and invalidates CloudFront.
+# Expects an npm project in src/web-dashboard whose `npm run build` writes to dist/,
+# built with base path /dashboard/ (e.g. `base: '/dashboard/'` in vite.config).
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/web-dashboard/**'
+      - '.github/workflows/frontend-deploy.yml'
+  pull_request:
+    paths:
+      - 'src/web-dashboard/**'
+      - '.github/workflows/frontend-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+  STACK_NAME: fleet-telemetry-stack
+  NODE_VERSION: '22'
+  APP_DIR: src/web-dashboard
+  BUILD_DIR: dist
+
+jobs:
+  build:
+    name: Build dashboard
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.APP_DIR }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check for the dashboard project
+        run: |
+          if [ ! -f package.json ]; then
+            echo "::error::No package.json in $APP_DIR yet, nothing to build."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - run: npm ci
+
+      - name: Build (check only)
+        run: npm run build
+        env:
+          VITE_API_BASE_URL: https://example.invalid
+
+  deploy:
+    name: Deploy to S3 and CloudFront
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: frontend-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write # needed to request the OIDC token for AWS
+    defaults:
+      run:
+        working-directory: ${{ env.APP_DIR }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Read stack outputs
+        id: stack
+        run: |
+          output() {
+            aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
+          }
+          echo "api_url=$(output ApiBaseUrl)" >> "$GITHUB_OUTPUT"
+          echo "bucket=$(output SiteBucketName)" >> "$GITHUB_OUTPUT"
+          echo "distribution=$(output DistributionId)" >> "$GITHUB_OUTPUT"
+          echo "dashboard_url=$(output DashboardUrl)" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          VITE_API_BASE_URL: ${{ steps.stack.outputs.api_url }}
+
+      - name: Upload to S3
+        env:
+          BUCKET: ${{ steps.stack.outputs.bucket }}
+        run: aws s3 sync "$BUILD_DIR" "s3://$BUCKET/dashboard/" --delete
+
+      - name: Invalidate CloudFront
+        env:
+          DISTRIBUTION_ID: ${{ steps.stack.outputs.distribution }}
+          DASHBOARD_URL: ${{ steps.stack.outputs.dashboard_url }}
+        run: |
+          id=$(aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" \
+            --paths '/dashboard/*' --query Invalidation.Id --output text)
+          aws cloudfront wait invalidation-completed --distribution-id "$DISTRIBUTION_ID" --id "$id"
+          echo "Deployed to $DASHBOARD_URL" >> "$GITHUB_STEP_SUMMARY"
