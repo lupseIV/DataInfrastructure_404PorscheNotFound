@@ -1,0 +1,137 @@
+@import "tailwindcss";
+
+/* Design tokens from the Stitch "Industrial Fleet Telemetry" design system. */
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --color-surface: #0b1326; /* page background, top bar */
+  --color-surface-panel: #0d162b; /* side panels */
+  --color-surface-low: #131b2e; /* cards, chips */
+  --color-surface-container: #171f33; /* hover */
+  --color-surface-high: #222a3d;
+  --color-surface-deep: #060e20; /* inputs, progress tracks */
+  --color-map: #070e1f;
+  --color-line: #1e293b; /* 1px borders */
+  --color-on-surface: #dae2fd;
+  --color-muted: #86948a;
+  --color-primary: #10b981; /* healthy / brand */
+  --color-primary-light: #4edea3;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    background-color: var(--color-surface);
+    color: var(--color-on-surface);
+    font-family: var(--font-sans);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Live numbers must not jitter horizontally when they update. */
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+  }
+
+  button {
+    cursor: pointer;
+  }
+}
+
+/* Base icon style. Google's icon stylesheet also sets `display` on this class, so to
+   show/hide an icon responsively, put `hidden` / `lg:flex` on a wrapper element. */
+@layer components {
+  .material-symbols-outlined {
+    font-family: "Material Symbols Outlined";
+    font-weight: normal;
+    font-style: normal;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    display: inline-block;
+    white-space: nowrap;
+    direction: ltr;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #0d162b;
+}
+::-webkit-scrollbar-thumb {
+  background: #222a3d;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #374151;
+}
+
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---- Leaflet, restyled to match the dark dashboard ---- */
+.leaflet-container {
+  background: var(--color-map);
+  font-family: var(--font-sans);
+}
+
+/* Turns light OpenStreetMap tiles into a dark navy map that matches the design. */
+.leaflet-layer.dark-tiles {
+  filter: invert(1) hue-rotate(195deg) brightness(0.72) contrast(1.15) saturate(0.45);
+}
+
+.leaflet-control-attribution {
+  background: rgba(11, 19, 38, 0.8) !important;
+  color: #64748b !important;
+  font-size: 9px !important;
+}
+.leaflet-control-attribution a {
+  color: #94a3b8 !important;
+}
+
+.leaflet-tooltip.device-label {
+  background: #0b1326;
+  border: 1.5px solid var(--label-color, #10b981);
+  border-radius: 4px;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.leaflet-tooltip.device-label::before {
+  border-top-color: var(--label-color, #10b981);
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+.pulse-ring {
+  animation: pulse-ring 2.2s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+  transform-origin: center;
+  transform-box: fill-box;
+}

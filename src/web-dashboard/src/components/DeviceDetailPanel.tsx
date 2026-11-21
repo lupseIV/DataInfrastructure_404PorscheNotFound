@@ -1,0 +1,219 @@
+import type { ReactNode } from "react";
+import {
+  formatActivity,
+  formatAgo,
+  formatDrainRate,
+  formatDuration,
+  formatPercent,
+  formatUtc,
+  parseTime,
+} from "../lib/format";
+import { alertStyle, groupInfo, type StatusGroup } from "../lib/status";
+import type { Device, TelemetryRecord } from "../types";
+import { BatteryChart } from "./BatteryChart";
+import { HistoryTable } from "./HistoryTable";
+import { Icon } from "./Icon";
+
+interface DeviceDetailPanelProps {
+  device: Device;
+  group: StatusGroup;
+  now: number;
+  history: TelemetryRecord[] | null;
+  historyLoading: boolean;
+  historyError: string | null;
+  onClose: () => void;
+}
+
+/** Right-hand inspector for the selected device (bottom sheet on mobile). */
+export function DeviceDetailPanel({
+  device,
+  group,
+  now,
+  history,
+  historyLoading,
+  historyError,
+  onClose,
+}: DeviceDetailPanelProps) {
+  const g = groupInfo(group);
+  const alert = alertStyle(device.alertStatus);
+  const offline = group === "offline";
+  const lastSeen = formatAgo(parseTime(device.lastUpdated), now);
+  const level = Math.min(100, Math.max(0, device.batteryLevel ?? 0));
+  const drain = device.drainRatePerHour ?? 0;
+  const drainColor = device.isCharging
+    ? "text-cyan-400"
+    : drain > 25
+      ? "text-red-400"
+      : drain > 12
+        ? "text-amber-400"
+        : "text-primary-light";
+
+  return (
+    <aside
+      aria-label={`Details for ${device.deviceId}`}
+      className="fixed inset-x-0 bottom-0 z-40 max-h-[75vh] rounded-t-xl border-t border-line shadow-[0_-8px_24px_rgba(0,0,0,0.45)]
+        lg:static lg:z-20 lg:max-h-none lg:w-[320px] lg:rounded-none lg:border-t-0 lg:border-l lg:shadow-none
+        h-auto lg:h-full shrink-0 flex flex-col bg-surface-panel border-line/70 overflow-hidden"
+    >
+      {/* Header */}
+      <div className="p-3 border-b border-line/70 bg-surface/80 flex items-center justify-between gap-2 shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className={`w-8 h-8 rounded-md flex items-center justify-center shrink-0 ${g.iconBg}`}>
+            <Icon name="smartphone" className="text-[18px]" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <h2 className="font-mono text-xs font-bold text-white tracking-tight leading-none truncate">
+                {device.deviceId}
+              </h2>
+              <span
+                className={`px-1.5 py-0.5 rounded border text-[9px] font-mono font-semibold leading-none ${g.iconBg} ${g.chipBorder}`}
+              >
+                {g.label}
+              </span>
+            </div>
+            <span
+              className={`text-[10px] font-mono leading-none block mt-1 ${offline ? "text-slate-400" : "text-primary"}`}
+            >
+              {offline ? `Offline · last seen ${lastSeen}` : `Online · last ping ${lastSeen}`}
+            </span>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          title="Close details"
+          aria-label="Close details"
+          className="p-1 rounded text-slate-400 hover:text-white hover:bg-surface-container"
+        >
+          {/* Wrapped: Google's icon stylesheet sets `display` on the icon itself. */}
+          <span className="hidden lg:flex">
+            <Icon name="keyboard_double_arrow_right" className="text-[18px]" />
+          </span>
+          <span className="flex lg:hidden">
+            <Icon name="close" className="text-[18px]" />
+          </span>
+        </button>
+      </div>
+
+      <div className="p-3 space-y-3 flex-1 overflow-y-auto">
+        {/* Alert from the backend */}
+        <div className={`rounded-lg border px-3 py-2 flex items-start gap-2 ${alert.banner}`}>
+          <Icon name={alert.icon} className="text-[18px] mt-px" />
+          <div className="min-w-0">
+            <div className="text-[11px] font-mono font-bold uppercase tracking-wider">{alert.label}</div>
+            <div className="text-xs text-slate-200 mt-0.5">{device.alertReason ?? "No active alerts."}</div>
+          </div>
+        </div>
+
+        {/* Battery */}
+        <Card icon="battery_charging_full" iconClass="text-primary" title="Battery Health" badge={g.label} badgeClass={g.text}>
+          <div className="flex items-baseline justify-between pt-0.5">
+            <span className="text-2xl font-bold font-mono text-white tracking-tight">
+              {formatPercent(device.batteryLevel)}
+            </span>
+            <span className={`text-xs font-mono font-medium ${drainColor}`}>
+              {formatDrainRate(device.drainRatePerHour, device.isCharging)}
+            </span>
+          </div>
+          <div className="w-full h-1.5 rounded-full bg-surface-deep overflow-hidden">
+            <div className={`h-full rounded-full ${g.bar}`} style={{ width: `${level}%` }} />
+          </div>
+          <div className="grid grid-cols-2 gap-2 pt-1.5 border-t border-line/50">
+            <Stat label="Time remaining" value={formatDuration(device.estimatedMinutesRemaining, device.isCharging)} />
+            <Stat label="Power" value={device.isCharging ? "Charging" : "On Battery"} />
+          </div>
+        </Card>
+
+        {/* Activity & status */}
+        <Card icon="sensors" iconClass="text-amber-400" title="Activity & Status">
+          <div className="space-y-0 text-xs font-mono">
+            <Row label="Motion state" value={formatActivity(device.activityState)} />
+            <Row label="Connection" value={offline ? "Offline (>30s)" : "Online"} valueClass={offline ? "text-slate-400" : "text-primary"} />
+            <Row label="Last updated" value={formatUtc(device.lastUpdated)} last />
+          </div>
+        </Card>
+
+        {/* History */}
+        <Card icon="monitoring" iconClass="text-cyan-400" title="Battery History">
+          {historyError && !history ? (
+            <p className="py-4 text-center text-[11px] font-mono text-red-400">Could not load history: {historyError}</p>
+          ) : historyLoading && !history ? (
+            <p className="py-6 text-center text-[11px] font-mono text-slate-400">Loading history…</p>
+          ) : (
+            <BatteryChart records={history ?? []} />
+          )}
+        </Card>
+
+        <Card icon="receipt_long" iconClass="text-slate-300" title="Recent Events" badge={history ? `${history.length}` : undefined} badgeClass="text-slate-400">
+          {history ? (
+            <HistoryTable records={history} />
+          ) : (
+            <p className="py-4 text-center text-[11px] font-mono text-slate-400">
+              {historyError ? "Unavailable." : "Loading…"}
+            </p>
+          )}
+        </Card>
+      </div>
+    </aside>
+  );
+}
+
+function Card({
+  icon,
+  iconClass,
+  title,
+  badge,
+  badgeClass = "",
+  children,
+}: {
+  icon: string;
+  iconClass: string;
+  title: string;
+  badge?: string;
+  badgeClass?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="rounded-lg bg-surface-low/60 border border-line p-3 space-y-2.5">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-slate-300">
+          <Icon name={icon} className={`text-[15px] ${iconClass}`} />
+          <h3 className="text-xs font-semibold">{title}</h3>
+        </div>
+        {badge && (
+          <span className={`text-[10px] font-mono bg-white/5 px-1.5 py-0.5 rounded ${badgeClass}`}>{badge}</span>
+        )}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col">
+      <span className="text-[10px] font-mono text-slate-400">{label}</span>
+      <span className="text-xs font-mono font-semibold text-slate-200 mt-0.5">{value}</span>
+    </div>
+  );
+}
+
+function Row({
+  label,
+  value,
+  valueClass = "text-slate-200",
+  last = false,
+}: {
+  label: string;
+  value: string;
+  valueClass?: string;
+  last?: boolean;
+}) {
+  return (
+    <div className={`flex items-center justify-between gap-2 py-1.5 ${last ? "" : "border-b border-line/40"}`}>
+      <span className="text-slate-400 text-[11px]">{label}</span>
+      <span className={`font-medium text-[11px] text-right ${valueClass}`}>{value}</span>
+    </div>
+  );
+}

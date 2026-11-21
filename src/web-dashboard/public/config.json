@@ -1,0 +1,10 @@
+{
+  "apiBaseUrl": "",
+  "useMockData": null,
+  "pollIntervalMs": null,
+  "mapCenter": null,
+  "mapZoom": null,
+  "mapTileUrl": null,
+  "mapTileAttribution": null,
+  "mapDarkFilter": null
+}
