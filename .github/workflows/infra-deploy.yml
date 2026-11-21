@@ -1,19 +1,66 @@
-name: Infrastructure deploy
+name: Infra / Deploy stacks and Lambdas
 
-# Deploys the four CDK stacks in dependency order: web (S3 + CloudFront), data (DynamoDB + SQS),
-# lambdas, api (API Gateway). See docs/infrastructure.md.
-# Lambda code-only changes are deployed faster by lambda-deploy.yml.
+# One workflow for every backend deploy: the four CDK stacks and the code of each Lambda.
+# Every deploy is its own job waiting for manual approval (like a GitLab manual job).
+# See docs/infrastructure.md, section 3.
+#
+#   checks ──▶ plan ──▶ web ───────────────┐
+#                  ├──▶ data ──▶ lambdas stack ──▶ api
+#                  └──▶ ingest · processor · query · battery · connectivity  (code only)
+#
+# - Pull requests: checks only (tsc + synth, Python compile + tests).
+# - main (merge): "plan" runs cdk diff per stack and finds the Lambdas the change affects.
+#   Only stacks with differences and affected Lambdas get a job; each one pauses on its GitHub
+#   environment (stack-web ... stack-api, lambda-ingest ... lambda-connectivity) until someone
+#   approves it under "Review deployments".
+# - Manual run: pick the stacks and the Lambdas to offer. Stacks = none deploys Lambda code
+#   without touching any stack.
+#
+# Stack jobs run only after the stacks they depend on were deployed or had nothing to deploy;
+# rejecting a stack skips the stacks after it. Lambda jobs only wait for the lambdas stack job
+# (so a new function exists before its code is updated); rejecting that job lets them run.
 on:
   push:
     branches: [main]
     paths:
       - 'infrastructure/**'
-      - '.github/workflows/infra-deploy.yml'
+      - 'src/backend/**'
+      - '.github/workflows/infra-deploy*.yml'
+      - '.github/actions/**'
+      - '.github/scripts/**'
   pull_request:
     paths:
       - 'infrastructure/**'
-      - '.github/workflows/infra-deploy.yml'
+      - 'src/backend/**'
+      - '.github/workflows/infra-deploy*.yml'
+      - '.github/actions/**'
+      - '.github/scripts/**'
   workflow_dispatch:
+    inputs:
+      stacks:
+        description: 'Stacks to offer (changed = only stacks with differences)'
+        type: choice
+        default: changed
+        options:
+          - changed
+          - all
+          - none
+          - web
+          - data
+          - lambdas
+          - api
+      lambdas:
+        description: 'Lambda code to offer'
+        type: choice
+        default: none
+        options:
+          - none
+          - all
+          - ingest
+          - processor
+          - query
+          - battery
+          - connectivity
 
 permissions:
   contents: read
@@ -21,10 +68,11 @@ permissions:
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
   NODE_VERSION: '22'
+  PYTHON_VERSION: '3.13'
 
 jobs:
-  check:
-    name: Type-check and synth
+  check-infra:
+    name: Check infra (tsc + synth)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -32,13 +80,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v5
+      - uses: ./.github/actions/setup-cdk
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: infrastructure/package-lock.json
-
-      - run: npm ci
 
       - name: Type-check
         run: npx tsc --noEmit
@@ -46,47 +90,299 @@ jobs:
       - name: Synthesize
         run: npx cdk synth --quiet
 
-  deploy:
-    name: Deploy to AWS
-    needs: check
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+  check-backend:
+    name: Check Lambda code (compile + tests)
     runs-on: ubuntu-latest
-    # Shared with lambda-deploy.yml so the two never update the functions at the same time.
-    concurrency:
-      group: aws-backend-deploy
-      cancel-in-progress: false
-    permissions:
-      contents: read
-      id-token: write # needed to request the OIDC token for AWS
-    defaults:
-      run:
-        working-directory: infrastructure
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install test tools
+        run: pip install -r src/backend/requirements-dev.txt pytest
+
+      - name: Compile handlers
+        working-directory: src/backend
+        run: python -m compileall -q handlers
+
+      - name: Backend tests
+        if: hashFiles('src/backend/tests/**/*.py') != ''
+        working-directory: src/backend
+        run: python -m pytest tests
+
+      - name: Affected-Lambdas script tests
+        run: python -m pytest .github/scripts -q
+
+  plan:
+    name: Plan (stack diffs + affected Lambdas)
+    needs: [check-infra, check-backend]
+    # The deploy role only trusts main.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # needed to request the OIDC token for AWS
+    outputs:
+      web: ${{ steps.stacks.outputs.web }}
+      data: ${{ steps.stacks.outputs.data }}
+      lambdas: ${{ steps.stacks.outputs.lambdas }}
+      api: ${{ steps.stacks.outputs.api }}
+      fn-ingest: ${{ steps.functions.outputs.ingest }}
+      fn-processor: ${{ steps.functions.outputs.processor }}
+      fn-query: ${{ steps.functions.outputs.query }}
+      fn-battery: ${{ steps.functions.outputs.battery }}
+      fn-connectivity: ${{ steps.functions.outputs.connectivity }}
+    env:
+      STACKS: ${{ inputs.stacks || 'changed' }}
+      # A merge offers the Lambdas its changes affect; a manual run offers what was picked.
+      LAMBDAS: ${{ github.event_name == 'push' && 'affected' || inputs.lambdas || 'none' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # to list the files changed by the push
+
+      - uses: ./.github/actions/setup-cdk
+        if: env.STACKS != 'none'
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: infrastructure/package-lock.json
 
-      - run: npm ci
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
+      - name: AWS login
+        if: env.STACKS != 'none'
+        uses: ./.github/actions/aws-login
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-arn: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
 
-      - name: Deploy stacks
-        # CDK deploys them in dependency order (web, data, lambdas, api) and skips unchanged ones.
-        run: npx cdk deploy WebStack DataStack LambdaStack ApiStack --require-approval never --outputs-file cdk-outputs.json
-
-      - name: Stack outputs
+      - name: cdk diff per stack
+        id: diff
+        if: env.STACKS != 'none'
+        working-directory: infrastructure
         run: |
+          npx cdk synth --quiet
+          echo "## Stack diffs" >> "$GITHUB_STEP_SUMMARY"
+          for pair in web:WebStack data:DataStack lambdas:LambdaStack api:ApiStack; do
+            key="${pair%%:*}"; stack="${pair#*:}"
+            out="$RUNNER_TEMP/diff-$key.txt"
+            set +e
+            npx cdk diff --app cdk.out "$stack" --exclusively > "$out" 2>&1
+            rc=$?
+            set -e
+            if [ $rc -ne 0 ]; then
+              changed=true; label="⚠️ diff failed, deploy offered"
+              echo "::warning::cdk diff failed for $stack (exit $rc); its deploy job is offered anyway."
+            elif grep -qE "There were no differences|Number of stacks with differences: 0" "$out"; then
+              changed=false; label="no changes"
+            else
+              changed=true; label="changes"
+            fi
+            echo "$key=$changed" >> "$GITHUB_OUTPUT"
+            {
+              echo "<details><summary><b>$stack</b>: $label</summary>"
+              echo
+              echo '```'
+              sed 's/\x1b\[[0-9;]*m//g' "$out"
+              echo '```'
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Pick stacks
+        id: stacks
+        env:
+          WEB: ${{ steps.diff.outputs.web }}
+          DATA: ${{ steps.diff.outputs.data }}
+          LAMBDA_STACK: ${{ steps.diff.outputs.lambdas }}
+          API: ${{ steps.diff.outputs.api }}
+        run: |
+          offer() { # offer <key> <changed>
+            case "$STACKS" in
+              changed) echo "$1=${2:-false}" ;;
+              all)     echo "$1=true" ;;
+              "$1")    echo "$1=true" ;;
+              *)       echo "$1=false" ;;
+            esac
+          }
           {
-            echo '## Stack outputs'
-            echo '```json'
-            cat cdk-outputs.json
-            echo '```'
+            offer web "$WEB"
+            offer data "$DATA"
+            offer lambdas "$LAMBDA_STACK"
+            offer api "$API"
+          } | tee "$RUNNER_TEMP/stacks.txt" >> "$GITHUB_OUTPUT"
+          cat "$RUNNER_TEMP/stacks.txt"
+
+      - name: Pick Lambdas
+        id: functions
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          script=.github/scripts/affected_lambdas.py
+          out="$RUNNER_TEMP/functions.txt"
+          case "$LAMBDAS" in
+            affected)
+              if [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+                echo "Previous commit unknown, offering every function."
+                python "$script" --all > "$out"
+              else
+                git diff --name-only "$BEFORE" "$GITHUB_SHA" | python "$script" > "$out"
+              fi ;;
+            all)  python "$script" --all > "$out" ;;
+            none) python "$script" < /dev/null > "$out" ;;
+            *)    # one function picked by hand
+              python "$script" < /dev/null | grep -v '^functions=' \
+                | sed -E "s/^$LAMBDAS=false$/$LAMBDAS=true/" > "$out"
+              echo "functions=$LAMBDAS" >> "$out" ;;
+          esac
+          cat "$out" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          stacks=$(grep '=true$' "$RUNNER_TEMP/stacks.txt" | cut -d= -f1 | xargs)
+          functions=$(grep '^functions=' "$RUNNER_TEMP/functions.txt" | cut -d= -f2)
+          {
+            echo "## Offered for deployment"
+            echo "- Stacks (\`$STACKS\`): ${stacks:-none}"
+            echo "- Lambda code (\`$LAMBDAS\`): ${functions:-none}"
+            if grep -q '^lambdas=true$' "$RUNNER_TEMP/stacks.txt" && [ -n "$functions" ]; then
+              echo
+              echo "The Lambda jobs wait for the **lambdas stack** job. Approve it to update every"
+              echo "function through CloudFormation, or reject it to deploy only the Lambdas you approve."
+            fi
+            echo
+            echo "Approve the jobs you want under **Review deployments**; reject the others."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------- stacks
+
+  deploy-web:
+    name: Stack web (S3 + CloudFront)
+    needs: plan
+    if: needs.plan.outputs.web == 'true'
+    permissions:
+      contents: read
+      id-token: write # passed on to the reusable workflow for the AWS login
+    uses: ./.github/workflows/infra-deploy-stack.yml
+    with:
+      stack-id: WebStack
+      environment: stack-web
+    secrets: inherit
+
+  deploy-data:
+    name: Stack data (DynamoDB + SQS)
+    needs: plan
+    if: needs.plan.outputs.data == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/infra-deploy-stack.yml
+    with:
+      stack-id: DataStack
+      environment: stack-data
+    secrets: inherit
+
+  deploy-lambdas:
+    name: Stack lambdas
+    needs: [plan, deploy-data, deploy-web]
+    # Runs once data and web were deployed or skipped (no changes / not selected).
+    if: >-
+      !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.lambdas == 'true' &&
+      contains(fromJSON('["success","skipped"]'), needs.deploy-data.result) &&
+      contains(fromJSON('["success","skipped"]'), needs.deploy-web.result)
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/infra-deploy-stack.yml
+    with:
+      stack-id: LambdaStack
+      environment: stack-lambdas
+      # Same group as Infra / Deploy role: never run next to a change of the deploy role.
+      concurrency-group: aws-backend-deploy
+    secrets: inherit
+
+  deploy-api:
+    name: Stack api (API Gateway)
+    needs: [plan, deploy-data, deploy-lambdas, deploy-web]
+    # Also checks data: a rejected data stack skips lambdas, and must skip api as well.
+    if: >-
+      !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.api == 'true' &&
+      contains(fromJSON('["success","skipped"]'), needs.deploy-data.result) &&
+      contains(fromJSON('["success","skipped"]'), needs.deploy-lambdas.result) &&
+      contains(fromJSON('["success","skipped"]'), needs.deploy-web.result)
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/infra-deploy-stack.yml
+    with:
+      stack-id: ApiStack
+      environment: stack-api
+    secrets: inherit
+
+  # ---------------------------------------------------------------- Lambda code
+  # Each waits only for the lambdas stack job to finish, whatever its result
+  # (deployed, rejected, failed or not offered).
+
+  lambda-ingest:
+    name: Lambda ingest
+    needs: [plan, deploy-lambdas]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.fn-ingest == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/infra-deploy-lambda.yml
+    with:
+      function: ingest
+      environment: lambda-ingest
+    secrets: inherit
+
+  lambda-processor:
+    name: Lambda processor
+    needs: [plan, deploy-lambdas]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.fn-processor == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/infra-deploy-lambda.yml
+    with:
+      function: processor
+      environment: lambda-processor
+    secrets: inherit
+
+  lambda-query:
+    name: Lambda query
+    needs: [plan, deploy-lambdas]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.fn-query == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/infra-deploy-lambda.yml
+    with:
+      function: query
+      environment: lambda-query
+    secrets: inherit
+
+  lambda-battery:
+    name: Lambda battery
+    needs: [plan, deploy-lambdas]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.fn-battery == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/infra-deploy-lambda.yml
+    with:
+      function: battery
+      environment: lambda-battery
+    secrets: inherit
+
+  lambda-connectivity:
+    name: Lambda connectivity
+    needs: [plan, deploy-lambdas]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.fn-connectivity == 'true' }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/infra-deploy-lambda.yml
+    with:
+      function: connectivity
+      environment: lambda-connectivity
+    secrets: inherit

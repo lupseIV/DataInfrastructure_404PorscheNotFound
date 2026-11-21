@@ -32,9 +32,9 @@ export interface GithubDeployRoleStackProps extends cdk.StackProps {
  *
  * The role can only be assumed by workflows of `githubRepo` running on `deployBranch`.
  * Permissions, one block per workflow:
- * - infra-deploy.yml:    assume the CDK bootstrap roles (they do the deployment), read outputs
- * - lambda-deploy.yml:   update the code of the project's Lambda functions
- * - frontend-deploy.yml: write to the site bucket and invalidate CloudFront
+ * - infra-deploy.yml / -stack.yml: assume the CDK bootstrap roles (they do the deployment), read outputs
+ * - infra-deploy-lambda.yml:       update the code of the project's Lambda functions
+ * - web-dashboard-deploy.yml:      write to the site bucket and invalidate CloudFront
  */
 export class GithubDeployRoleStack extends cdk.Stack {
   public readonly role: iam.Role;
@@ -87,7 +87,7 @@ export class GithubDeployRoleStack extends cdk.Stack {
       }),
     );
 
-    // lambda-deploy.yml: update the code of the existing functions.
+    // infra-deploy-lambda.yml: update the code of the existing functions.
     this.role.addToPolicy(
       new iam.PolicyStatement({
         actions: ['lambda:UpdateFunctionCode', 'lambda:GetFunction', 'lambda:GetFunctionConfiguration'],
@@ -95,7 +95,7 @@ export class GithubDeployRoleStack extends cdk.Stack {
       }),
     );
 
-    // frontend-deploy.yml: upload the dashboard build and invalidate the CDN cache.
+    // web-dashboard-deploy.yml: upload the dashboard build and invalidate the CDN cache.
     const bucketArn = `arn:${this.partition}:s3:::${siteBucketName(props.projectName, this.account, this.region)}`;
     this.role.addToPolicy(
       new iam.PolicyStatement({

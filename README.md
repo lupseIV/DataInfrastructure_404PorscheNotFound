@@ -34,7 +34,9 @@ DataInfrastructure_404PorscheNotFound/
 │       ├── stacks/        # WebStack, DataStack, LambdaStack, ApiStack
 │       ├── constructs/    # Reusable building blocks used by the stacks
 │       └── naming.ts      # Fixed resource names shared by the stacks
-├── .github/workflows/     # CI/CD: infra, Lambda code, frontend, mobile APK, AWS bootstrap, deploy role update
+├── .github/workflows/     # CI/CD, prefixed by area: infra-*, web-*, mobile-*
+├── .github/actions/       # Shared workflow steps: setup-cdk, aws-login
+├── .github/scripts/       # affected_lambdas.py: which Lambdas a change affects
 ├── docs/                  # Infrastructure and deployment documentation
 ├── presentation/          # Final presentation: DataInfrastructure_404PorscheNotFound.pptx
 └── README.md
@@ -43,16 +45,17 @@ DataInfrastructure_404PorscheNotFound/
 ## Setup and installation
 
 1. One-time AWS setup (bootstrap + GitHub deploy role): [docs/infrastructure.md § 5.1](docs/infrastructure.md#51-first-time-setup-of-a-new-aws-account).
-2. Merge to `main` (or run the workflows by hand): infrastructure, Lambda code and dashboard deploy automatically.
-3. Set the `INGESTION_URL` variable and `INGESTION_API_KEY` secret, then run **Mobile APK** and install the APK on the phones.
+2. Create the GitHub environments with required reviewers ([docs/infrastructure.md § 4](docs/infrastructure.md#github-environments-settings--environments)).
+3. Merge to `main` (or run the workflows by hand). The dashboard deploys automatically; each stack and each Lambda waits for your approval in **Infra / Deploy stacks and Lambdas**.
+4. Set the `INGESTION_URL` variable and `INGESTION_API_KEY` secret, then run **Mobile / APK build** and install the APK on the phones.
 
 Component-specific setup: [src/web-dashboard/README.md](src/web-dashboard/README.md),
 [src/mobile-app/tele/README.md](src/mobile-app/tele/README.md).
 
 ## Running the solution
 
-- **Dashboard:** `DashboardUrl` output of the `fleet-telemetry-web` stack (also in the Frontend deploy run summary).
-- **Phone:** install the APK from the **Mobile APK** run's artifacts; it starts sending every 5 s.
+- **Dashboard:** `DashboardUrl` output of the `fleet-telemetry-web` stack (also in the Web / Dashboard deploy run summary).
+- **Phone:** install the APK from the **Mobile / APK build** run's artifacts; it starts sending every 5 s.
 - **API check:** open `<ApiBaseUrl>/api/devices` in a browser.
 
 ## Dependencies
