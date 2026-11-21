@@ -25,6 +25,10 @@ export interface TelemetryApiProps {
  * REST API in front of the Lambdas (Contracts A and C).
  *
  *   POST /api/telemetry                      -> ingest     (requires x-api-key)
+ *   POST /api/events/battery-low             -> battery    (requires x-api-key)
+ *   POST /api/events/battery-last-call       -> battery    (requires x-api-key)
+ *   POST /api/events/connectivity-degraded   -> connectivity (requires x-api-key)
+ *   POST /api/events/connectivity-last-call  -> connectivity (requires x-api-key)
  *   GET  /api/devices                        -> query
  *   GET  /api/devices/{deviceId}/telemetry   -> query
  *
@@ -86,6 +90,21 @@ export class TelemetryApi extends Construct {
     telemetry.addMethod('POST', new apigateway.LambdaIntegration(props.functions.ingestFunction), {
       apiKeyRequired: true,
     });
+
+    // Contracts D1 to E2: four routes, two Lambdas. Each Lambda picks the event from the
+    // last path segment, so the routes must pass the request path through (proxy integration).
+    const events = apiRoot.addResource('events');
+    const batteryIntegration = new apigateway.LambdaIntegration(props.functions.batteryFunction);
+    const connectivityIntegration = new apigateway.LambdaIntegration(props.functions.connectivityFunction);
+    const eventRoutes: Array<[string, apigateway.LambdaIntegration]> = [
+      ['battery-low', batteryIntegration],
+      ['battery-last-call', batteryIntegration],
+      ['connectivity-degraded', connectivityIntegration],
+      ['connectivity-last-call', connectivityIntegration],
+    ];
+    for (const [path, integration] of eventRoutes) {
+      events.addResource(path).addMethod('POST', integration, { apiKeyRequired: true });
+    }
 
     const queryIntegration = new apigateway.LambdaIntegration(props.functions.queryFunction);
     const devices = apiRoot.addResource('devices');
