@@ -21,7 +21,17 @@ interface FleetMapProps {
   filtered: boolean;
   /** The device list could not be loaded and there is no older data to show. */
   loadFailed: boolean;
+  /** A position to highlight (an event location or a last known position); the map flies to it. */
+  focus?: MapFocus | null;
 }
+
+export interface MapFocus {
+  lat: number;
+  lng: number;
+  label: string;
+}
+
+const FOCUS_COLOR = "#f59e0b";
 
 const MARKER_BORDER = "#0b1326";
 
@@ -78,6 +88,7 @@ export function FleetMap({
   loading,
   filtered,
   loadFailed,
+  focus = null,
 }: FleetMapProps) {
   const [map, setMap] = useState<LeafletMap | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -137,6 +148,12 @@ export function FleetMap({
     // Only when the selection changes, not on every refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, selectedId]);
+
+  // Fly to a highlighted position (event / last known position) when it changes.
+  useEffect(() => {
+    if (!map || !focus) return;
+    map.flyTo([focus.lat, focus.lng], Math.max(map.getZoom(), 16), { duration: 0.8 });
+  }, [map, focus]);
 
   const selectedMarker = markers.find((m) => m.device.deviceId === selectedId);
 
@@ -241,6 +258,25 @@ export function FleetMap({
             </>
           );
         })()}
+        {focus && (
+          <>
+            <CircleMarker
+              center={[focus.lat, focus.lng]}
+              radius={14}
+              interactive={false}
+              pathOptions={{ color: FOCUS_COLOR, weight: 2, dashArray: "3 3", fillColor: FOCUS_COLOR, fillOpacity: 0.12 }}
+            />
+            <CircleMarker
+              center={[focus.lat, focus.lng]}
+              radius={4}
+              pathOptions={{ color: FOCUS_COLOR, weight: 2, fillColor: "#0b1326", fillOpacity: 1 }}
+            >
+              <Tooltip permanent direction="bottom" offset={[0, 14]} className="device-label">
+                <span style={{ color: FOCUS_COLOR }}>◎</span> {focus.label}
+              </Tooltip>
+            </CircleMarker>
+          </>
+        )}
       </MapContainer>
 
       {/* Map controls (top right) */}
