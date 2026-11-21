@@ -3,14 +3,10 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
+import { siteBucketName } from '../naming';
 
 /** Apps served by the distribution, each from its own prefix in the bucket. */
 export const WEB_APPS = ['dashboard'] as const;
-
-/** Site bucket name; fixed so the GitHub deploy role can be scoped to it. */
-export function siteBucketName(projectName: string, account: string, region: string): string {
-  return `${projectName}-site-${account}-${region}`;
-}
 
 export interface WebHostingProps {
   /** Prefix used for resource names, e.g. "fleet-telemetry". */

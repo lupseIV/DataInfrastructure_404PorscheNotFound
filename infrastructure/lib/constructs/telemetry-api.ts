@@ -1,12 +1,20 @@
 import * as cdk from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { Construct } from 'constructs';
-import { TelemetryFunctions } from './telemetry-functions';
+
+/** The Lambdas behind the routes (created by the Lambda stack, looked up by name). */
+export interface TelemetryFunctionRefs {
+  readonly ingestFunction: lambda.IFunction;
+  readonly queryFunction: lambda.IFunction;
+  readonly batteryFunction: lambda.IFunction;
+  readonly connectivityFunction: lambda.IFunction;
+}
 
 export interface TelemetryApiProps {
   /** Prefix used for resource names, e.g. "fleet-telemetry". */
   readonly projectName: string;
-  readonly functions: TelemetryFunctions;
+  readonly functions: TelemetryFunctionRefs;
   /** Browser origin allowed by CORS, e.g. "https://d123.cloudfront.net" or "*". */
   readonly allowedOrigin: string;
   /**

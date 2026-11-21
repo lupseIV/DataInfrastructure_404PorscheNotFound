@@ -1,20 +1,33 @@
 import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
-import { TelemetryQueue } from './telemetry-queue';
-import { TelemetryTables } from './telemetry-tables';
+import { FunctionName, functionName as fullFunctionName } from '../naming';
 
 /** Timeout of the processor Lambda; the queue's visibility timeout is derived from it. */
 export const PROCESSOR_TIMEOUT = cdk.Duration.seconds(30);
 
+/** The DynamoDB tables the functions use (created by the data stack, looked up by name). */
+export interface TelemetryTableRefs {
+  readonly snapshotsTable: dynamodb.ITableV2;
+  readonly latestTable: dynamodb.ITableV2;
+  readonly alertsTable: dynamodb.ITableV2;
+}
+
+/** The SQS queue between ingest and processor (created by the data stack, looked up by name). */
+export interface TelemetryQueueRefs {
+  readonly queue: sqs.IQueue;
+}
+
 export interface TelemetryFunctionsProps {
   /** Prefix used for function names, e.g. "fleet-telemetry". */
   readonly projectName: string;
-  readonly tables: TelemetryTables;
-  readonly events: TelemetryQueue;
+  readonly tables: TelemetryTableRefs;
+  readonly events: TelemetryQueueRefs;
   /** Browser origin allowed by CORS; passed to the HTTP-facing Lambdas as ALLOWED_ORIGIN. */
   readonly allowedOrigin: string;
   /**
@@ -73,8 +86,8 @@ export class TelemetryFunctions extends Construct {
       exclude: ['__pycache__', '*.pyc', '.venv', '.idea', 'tests', 'README.md', 'requirements-dev.txt', '.gitignore'],
     });
 
-    const createFunction = (name: string, handler: string, timeout: cdk.Duration, environment: Record<string, string>) => {
-      const functionName = `${props.projectName}-${name}`;
+    const createFunction = (name: FunctionName, handler: string, timeout: cdk.Duration, environment: Record<string, string>) => {
+      const functionName = fullFunctionName(props.projectName, name);
       // "battery-last-call" -> "BatteryLastCallFunction"; single-word names give the same ids as before.
       const pascal = name.split('-').map((part) => part[0].toUpperCase() + part.slice(1)).join('');
       return new lambda.Function(this, `${pascal}Function`, {
@@ -128,7 +141,7 @@ export class TelemetryFunctions extends Construct {
 
     // Event Lambdas (Contracts D1 to E2): each writes an alert row and updates the device's
     // latest item, so they only need write access to the two tables.
-    const createEventFunction = (name: string, handler: string, thresholds: Record<string, string>) => {
+    const createEventFunction = (name: FunctionName, handler: string, thresholds: Record<string, string>) => {
       const fn = createFunction(name, handler, cdk.Duration.seconds(10), {
         ALERTS_TABLE: props.tables.alertsTable.tableName,
         LATEST_TABLE: props.tables.latestTable.tableName,

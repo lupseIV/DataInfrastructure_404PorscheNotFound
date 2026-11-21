@@ -52,7 +52,7 @@ jobs:
             echo "- Account: \`$account\`, region \`$AWS_REGION\`"
             echo "- Lambda concurrency limit: **$limit**"
             if [ "$limit" -lt 100 ]; then
-              echo "  - ⚠️ Low limit: set \`\"lambdaReservedConcurrency\": 0\` in \`infrastructure/cdk.json\` before deploying TelemetryStack"
+              echo "  - ⚠️ Low limit: set \`\"lambdaReservedConcurrency\": 0\` in \`infrastructure/cdk.json\` before deploying LambdaStack"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

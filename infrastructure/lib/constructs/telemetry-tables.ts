@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import { Construct } from 'constructs';
+import { tableNames } from '../naming';
 
 export interface TelemetryTablesProps {
   /** Prefix used for table names, e.g. "fleet-telemetry". */
@@ -37,6 +38,7 @@ export class TelemetryTables extends Construct {
   constructor(scope: Construct, id: string, props: TelemetryTablesProps) {
     super(scope, id);
 
+    const names = tableNames(props.projectName);
     const maxUnits = props.maxRequestUnitsPerSecond ?? 100;
     const billing = dynamodb.Billing.onDemand({
       maxReadRequestUnits: maxUnits,
@@ -44,7 +46,7 @@ export class TelemetryTables extends Construct {
     });
 
     this.snapshotsTable = new dynamodb.TableV2(this, 'SnapshotsTable', {
-      tableName: `${props.projectName}-snapshots`,
+      tableName: names.snapshots,
       partitionKey: { name: 'deviceId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'timestamp', type: dynamodb.AttributeType.STRING },
       billing,
@@ -54,14 +56,14 @@ export class TelemetryTables extends Construct {
     });
 
     this.latestTable = new dynamodb.TableV2(this, 'LatestTable', {
-      tableName: `${props.projectName}-latest`,
+      tableName: names.latest,
       partitionKey: { name: 'deviceId', type: dynamodb.AttributeType.STRING },
       billing,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     this.alertsTable = new dynamodb.TableV2(this, 'AlertsTable', {
-      tableName: `${props.projectName}-alerts`,
+      tableName: names.alerts,
       partitionKey: { name: 'deviceId', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'sortKey', type: dynamodb.AttributeType.STRING },
       billing,

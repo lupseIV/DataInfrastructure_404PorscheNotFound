@@ -1,6 +1,7 @@
 name: Infrastructure deploy
 
-# Deploys the CDK stack: API Gateway, Lambdas (configuration), SQS, DynamoDB, S3 + CloudFront.
+# Deploys the four CDK stacks in dependency order: web (S3 + CloudFront), data (DynamoDB + SQS),
+# lambdas, api (API Gateway). See docs/infrastructure.md.
 # Lambda code-only changes are deployed faster by lambda-deploy.yml.
 on:
   push:
@@ -77,8 +78,9 @@ jobs:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy TelemetryStack
-        run: npx cdk deploy TelemetryStack --require-approval never --outputs-file cdk-outputs.json
+      - name: Deploy stacks
+        # CDK deploys them in dependency order (web, data, lambdas, api) and skips unchanged ones.
+        run: npx cdk deploy WebStack DataStack LambdaStack ApiStack --require-approval never --outputs-file cdk-outputs.json
 
       - name: Stack outputs
         run: |
