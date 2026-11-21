@@ -19,6 +19,7 @@ from .event_common import ALERT_TTL_SECONDS, to_dynamo
 from .rules import OFFLINE_GRACE_SECONDS, SUSPECT_AFTER_SECONDS, next_presence
 
 _ddb = None
+_ddb_client = None
 
 
 def _resource():
@@ -30,6 +31,21 @@ def _resource():
     return _ddb
 
 
+def _client():
+    """Plain low-level client for the transaction, which is built with TypeSerializer.
+
+    Not `_resource().meta.client`: the resource's client serializes Python values itself,
+    so the already serialized values would be wrapped twice ({"S": "id"} -> {"M": {...}})
+    and DynamoDB rejects every transaction.
+    """
+    global _ddb_client
+    if _ddb_client is None:
+        import boto3
+
+        _ddb_client = boto3.client("dynamodb")
+    return _ddb_client
+
+
 def _setting(name, default):
     try:
         return int(float(os.environ.get(name, default)))
@@ -39,6 +55,27 @@ def _setting(name, default):
 
 def _error_code(ex):
     return getattr(ex, "response", {}).get("Error", {}).get("Code")
+
+
+def _cancel_codes(ex):
+    """Per-item reasons of a cancelled transaction, e.g. ['ConditionalCheckFailed', 'None']."""
+    return [r.get("Code") for r in getattr(ex, "response", {}).get("CancellationReasons") or []]
+
+
+def is_condition_failure(ex):
+    """True when a write was refused only because a condition no longer held.
+
+    That means data arrived (or another sweep acted) after the scan, which is expected. A
+    transaction cancelled for any other reason (ValidationError, throughput, ...) is a real
+    error and must not be hidden as "skipped".
+    """
+    code = _error_code(ex)
+    if code == "ConditionalCheckFailedException":
+        return True
+    if code == "TransactionCanceledException":
+        codes = _cancel_codes(ex)
+        return "ConditionalCheckFailed" in codes and all(c in ("ConditionalCheckFailed", "None") for c in codes)
+    return False
 
 
 def scan_devices(latest_table):
@@ -129,11 +166,13 @@ def sweep(latest_table, client, latest_name, alerts_name, now, suspect_after, gr
             counts[decision["action"]] += 1
         except Exception as ex:
             # Data arrived (or another sweep acted) after the scan: leave it for the next run.
-            if _error_code(ex) in ("ConditionalCheckFailedException", "TransactionCanceledException"):
+            if is_condition_failure(ex):
                 counts["skipped"] += 1
             else:
                 counts["errors"] += 1
-                print(f"presence: {item.get('deviceId')} {decision['action']} failed: {ex!r}")
+                reasons = _cancel_codes(ex)
+                print(f"presence: {item.get('deviceId')} {decision['action']} failed: {ex!r}"
+                      + (f" reasons={reasons}" if reasons else ""))
     return counts
 
 
@@ -142,7 +181,7 @@ def handler(event, context):
     latest_name, alerts_name = os.environ["LATEST_TABLE"], os.environ["ALERTS_TABLE"]
     counts = sweep(
         ddb.Table(latest_name),
-        ddb.meta.client,
+        _client(),
         latest_name,
         alerts_name,
         datetime.now(timezone.utc),

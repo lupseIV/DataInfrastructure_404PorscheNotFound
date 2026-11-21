@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import unittest
@@ -6,6 +7,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import boto3  # noqa: E402
 from boto3.dynamodb.types import TypeDeserializer  # noqa: E402
 
 from handlers import presence, rules  # noqa: E402
@@ -29,9 +31,15 @@ def device(**extra):
 
 
 class ConditionFailed(Exception):
-    def __init__(self, code):
+    def __init__(self, code, reasons=None):
         super().__init__(code)
         self.response = {"Error": {"Code": code}}
+        if reasons is not None:
+            self.response["CancellationReasons"] = [{"Code": r} for r in reasons]
+
+
+# What DynamoDB returns when the Update's condition fails and the Put is fine.
+CONDITION_CANCEL = ("ConditionalCheckFailed", "None")
 
 
 def _holds(condition, item, names, values):
@@ -64,6 +72,7 @@ class FakeDynamo:
         self.latest = {i["deviceId"]: dict(i) for i in items}
         self.alerts = []
         self.fail_with = None  # error code to raise on the next write, e.g. "ProvisionedThroughputExceeded"
+        self.fail_reasons = None  # CancellationReasons for fail_with = "TransactionCanceledException"
 
     # Table-like API (scan / update_item) for the latest table.
     def scan(self, **kwargs):
@@ -79,7 +88,7 @@ class FakeDynamo:
     # Client-like API (low-level attribute values) for the transaction.
     def transact_write_items(self, TransactItems):
         if self.fail_with:
-            raise ConditionFailed(self.fail_with)
+            raise ConditionFailed(self.fail_with, self.fail_reasons)
         de = TypeDeserializer()
         upd = TransactItems[0]["Update"]
         put = TransactItems[1]["Put"]
@@ -87,7 +96,7 @@ class FakeDynamo:
         values = {k: de.deserialize(v) for k, v in upd["ExpressionAttributeValues"].items()}
         item = self.latest[key["deviceId"]]
         if not _holds(upd["ConditionExpression"], item, upd["ExpressionAttributeNames"], values):
-            raise ConditionFailed("TransactionCanceledException")  # nothing is written
+            raise ConditionFailed("TransactionCanceledException", CONDITION_CANCEL)  # nothing is written
         _apply(upd["UpdateExpression"], item, upd["ExpressionAttributeNames"], values)
         self.alerts.append({k: de.deserialize(v) for k, v in put["Item"].items()})
 
@@ -223,8 +232,8 @@ class SweepTests(unittest.TestCase):
 
         fake_resource = mock.Mock()
         fake_resource.Table.return_value = db
-        fake_resource.meta.client = db
         with mock.patch.object(presence, "_resource", return_value=fake_resource), \
+                mock.patch.object(presence, "_client", return_value=db), \
                 mock.patch.dict(os.environ, {"LATEST_TABLE": "latest", "ALERTS_TABLE": "alerts"}):
             with self.assertRaises(RuntimeError):
                 presence.handler({}, None)
@@ -233,15 +242,88 @@ class SweepTests(unittest.TestCase):
         db = FakeDynamo(device())
         fake_resource = mock.Mock()
         fake_resource.Table.return_value = db
-        fake_resource.meta.client = db
         env = {"LATEST_TABLE": "latest", "ALERTS_TABLE": "alerts", "OFFLINE_GRACE_SECONDS": "100000"}
         with mock.patch.object(presence, "_resource", return_value=fake_resource), \
+                mock.patch.object(presence, "_client", return_value=db), \
                 mock.patch.dict(os.environ, env), \
                 mock.patch.object(presence, "datetime", wraps=datetime) as fake_dt:
             fake_dt.now.return_value = at(600)
             counts = presence.handler({}, None)
         self.assertEqual(counts["suspect"], 1)  # 10 min silent, but the grace is set very high
         self.assertEqual(db.alerts, [])
+
+
+    def test_cancel_for_another_reason_is_an_error_not_skipped(self):
+        # A transaction DynamoDB rejects (here: a bad attribute value) must show up as an error.
+        db = FakeDynamo(device(presenceState="SUSPECT"))
+        db.fail_with = "TransactionCanceledException"
+        db.fail_reasons = ("ValidationError", "None")
+        counts = run(db, at(270))
+        self.assertEqual((counts["errors"], counts["skipped"]), (1, 0))
+        self.assertEqual(db.latest["d1"]["presenceState"], "SUSPECT")
+
+    def test_cancel_without_reasons_is_an_error(self):
+        db = FakeDynamo(device(presenceState="SUSPECT"))
+        db.fail_with = "TransactionCanceledException"
+        self.assertEqual(run(db, at(270))["errors"], 1)
+
+
+class _Captured(Exception):
+    """Stops a boto3 call right before it would be sent."""
+
+
+class RealClientShapeTests(unittest.TestCase):
+    """The transaction body as boto3 really serializes it (captured before sending, no network)."""
+
+    def setUp(self):
+        presence._ddb = presence._ddb_client = None
+        env = mock.patch.dict(os.environ, {"AWS_DEFAULT_REGION": "eu-west-1",
+                                           "AWS_ACCESS_KEY_ID": "test", "AWS_SECRET_ACCESS_KEY": "test"})
+        env.start()
+        self.addCleanup(env.stop)
+        self.addCleanup(setattr, presence, "_ddb_client", None)
+        self.addCleanup(setattr, presence, "_ddb", None)
+
+    def send(self, client):
+        """Runs write_with_alert for an offline decision and returns the TransactItems sent."""
+        item = device(presenceState="SUSPECT")
+        decision = rules.next_presence(item, at(270))
+        sent = {}
+
+        def capture(request, **kwargs):
+            # The JSON body as it would go over the wire (after any resource-level conversion).
+            sent.update(json.loads(request.body))
+            raise _Captured()
+
+        client.meta.events.register("before-send.dynamodb.TransactWriteItems", capture)
+        with self.assertRaises(_Captured):
+            presence.write_with_alert(client, "latest", "alerts", item, decision, "2026-11-21T10:04:30Z", 0)
+        return sent["TransactItems"]
+
+    def test_plain_client_sends_string_keys(self):
+        items = self.send(presence._client())
+        self.assertEqual(items[0]["Update"]["Key"], {"deviceId": {"S": "d1"}})
+        self.assertEqual(items[1]["Put"]["Item"]["deviceId"], {"S": "d1"})
+        self.assertEqual(items[1]["Put"]["Item"]["alertType"], {"S": "presence_offline"})
+
+    def test_resource_client_would_wrap_values_twice(self):
+        # Why the handler must not use _resource().meta.client: DynamoDB rejects this key.
+        items = self.send(boto3.resource("dynamodb").meta.client)
+        self.assertNotEqual(items[0]["Update"]["Key"], {"deviceId": {"S": "d1"}})
+
+    def test_handler_uses_the_plain_client(self):
+        db = FakeDynamo(device(presenceState="SUSPECT"))
+        fake_resource = mock.Mock()
+        fake_resource.Table.return_value = db
+        fake_resource.meta.client = mock.Mock(side_effect=AssertionError("resource client used"))
+        env = {"LATEST_TABLE": "latest", "ALERTS_TABLE": "alerts"}
+        with mock.patch.object(presence, "_resource", return_value=fake_resource), \
+                mock.patch.object(presence, "_client", return_value=db) as client, \
+                mock.patch.dict(os.environ, env):
+            presence.handler({}, None)
+        client.assert_called_once()
+        self.assertEqual(db.latest["d1"]["presenceState"], "OFFLINE")
+        self.assertEqual(len(db.alerts), 1)
 
 
 if __name__ == "__main__":
