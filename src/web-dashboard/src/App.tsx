@@ -1,45 +1,31 @@
-import { useEffect, useState } from "react";
-import { getDevices } from "./api";
+import { useState } from "react";
+import { TopBar } from "./components/TopBar";
 import { config } from "./config";
-import type { Device } from "./types";
+import { useNow } from "./hooks/useNow";
 
 export default function App() {
-  // Temporary one-time load to check the data layer; polling and the real
-  // components replace this in the next steps.
-  const [devices, setDevices] = useState<Device[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    getDevices(controller.signal)
-      .then(setDevices)
-      .catch((err: Error) => {
-        if (err.name !== "AbortError") setError(err.message);
-      });
-    return () => controller.abort();
-  }, []);
+  const now = useNow();
+  const [, setSidebarOpen] = useState(false);
 
   return (
-    <main className="app">
-      <header className="app-header">
-        <h1>Fleet Health Dashboard</h1>
-        <span className="mode-badge">
-          {config.useMockData ? "Mock data" : `Live: ${config.apiBaseUrl}`}
-        </span>
-      </header>
+    <div className="h-full w-full flex flex-col">
+      <TopBar
+        onlineCount={0}
+        lastUpdatedAt={null}
+        now={now}
+        isMock={config.useMockData}
+        hasError={false}
+        onRefresh={() => {}}
+        onToggleSidebar={() => setSidebarOpen((open) => !open)}
+      />
 
-      {error && <p>Error: {error}</p>}
-      {!error && !devices && <p>Loading…</p>}
-      {devices && (
-        <ul>
-          {devices.map((d) => (
-            <li key={d.deviceId}>
-              {d.deviceId}: {d.batteryLevel}% · {d.alertStatus}
-              {d.alertReason ? ` (${d.alertReason})` : ""} · last update {d.lastUpdated}
-            </li>
-          ))}
-        </ul>
-      )}
-    </main>
+      <div className="flex-1 min-h-0 w-full flex relative overflow-hidden">
+        <aside className="hidden lg:flex w-[240px] h-full border-r border-line/70 bg-surface-panel shrink-0" />
+        <main className="flex-1 min-w-0 flex flex-col relative overflow-hidden bg-map">
+          <section className="h-14 px-3 py-2 border-b border-line/70 bg-surface/90 shrink-0" />
+          <div className="flex-1 relative" />
+        </main>
+      </div>
+    </div>
   );
 }
