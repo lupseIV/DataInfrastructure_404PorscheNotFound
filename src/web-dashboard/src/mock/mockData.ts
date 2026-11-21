@@ -100,13 +100,14 @@ function liveFields(p: MockProfile, lastUpdated: string, now: number): Partial<D
     travelStatus: p.activityState,
     presenceState: presenceOf(p),
     lastSeenAt: new Date(fixTime + 1000).toISOString(), // server receipt, a second later
-    signalLevel: p.signal[0],
-    signalDbm: p.signal[1],
-    networkType: p.signal[2],
+    signal: { level: p.signal[0], dbm: p.signal[1], networkType: p.signal[2] },
+    // The last call was the final thing these devices sent (same time as the last snapshot).
     lastCallType: p.lastCall ?? null,
+    lastCallAt: p.lastCall ? lastUpdated : null,
     lastKnownLocation: p.lastCall && !p.noFix
       ? { lat, lon, accuracyM: ACCURACY_M[p.activityState], capturedAt: lastUpdated }
       : null,
+    lastKnownHeading: p.lastCall && p.headingDeg !== undefined ? { degrees: p.headingDeg, speedMps } : null,
   };
 }
 
@@ -189,23 +190,25 @@ type MockEvent = [number, Omit<AlertRecord, "timestamp" | "receivedAt">];
 
 const EVENTS: Record<string, MockEvent[]> = {
   "fleet-phone-03": [
-    [480, { alertType: "battery_low", alertStatus: "WARNING", alertReason: "Battery low", batteryLevel: 0.2, networkType: "wifi" }],
+    [480, { alertType: "battery_low", alertStatus: "WARNING", alertReason: "Battery low", batteryLevel: 20, networkType: "wifi" }],
   ],
   "fleet-phone-06": [
-    [70, { alertType: "battery_last_call", alertStatus: "CRITICAL", alertReason: "Battery last call", batteryLevel: 0.1, pendingEventCount: 0 }],
-    [540, { alertType: "battery_low", alertStatus: "WARNING", alertReason: "Battery low", batteryLevel: 0.2 }],
+    [70, { alertType: "battery_last_call", alertStatus: "CRITICAL", alertReason: "Battery last call", batteryLevel: 9.5, pendingEventCount: 0 }],
+    [540, { alertType: "battery_low", alertStatus: "WARNING", alertReason: "Battery low", batteryLevel: 20 }],
   ],
   "fleet-phone-09": [
-    [80, { alertType: "connectivity_last_call", alertStatus: "OK", alertReason: null, signalLevel: 0, previousSignalLevel: 1, signalDbm: -118, networkType: "none", batteryLevel: 0.3, pendingEventCount: 3 }],
-    [150, { alertType: "connectivity_degraded", alertStatus: "OK", alertReason: null, signalLevel: 1, previousSignalLevel: 3, signalDbm: -109, networkType: "cellular", batteryLevel: 0.3, pendingEventCount: 0 }],
+    [80, { alertType: "connectivity_last_call", alertStatus: "OK", alertReason: null, signalLevel: 0, previousSignalLevel: 1, signalDbm: -118, networkType: "none", batteryLevel: 30, pendingEventCount: 3 }],
+    [150, { alertType: "connectivity_degraded", alertStatus: "OK", alertReason: null, signalLevel: 1, previousSignalLevel: 3, signalDbm: -109, previousSignalDbm: -88, windowSeconds: 60, networkType: "cellular", batteryLevel: 30, pendingEventCount: 0 }],
   ],
   "fleet-phone-10": [
-    [240, { alertType: "connectivity_degraded", alertStatus: "OK", alertReason: null, signalLevel: 1, previousSignalLevel: 3, signalDbm: -108, networkType: "cellular", batteryLevel: 0.48, pendingEventCount: 0 }],
+    [240, { alertType: "connectivity_degraded", alertStatus: "OK", alertReason: null, signalLevel: 1, previousSignalLevel: 3, signalDbm: -108, previousSignalDbm: -86, windowSeconds: 60, networkType: "cellular", batteryLevel: 48, pendingEventCount: 0 }],
+    [1500, { alertType: "presence_recovered", alertStatus: "OK", alertReason: "Back online", offlineAlertSentAt: new Date(Date.now() - 1920 * 1000).toISOString() }],
+    [1920, { alertType: "presence_offline", alertStatus: "CRITICAL", alertReason: "Silent, cause unknown", silentSeconds: 251, lastCallType: null }],
   ],
   "fleet-phone-12": [
-    [60, { alertType: "presence_offline", alertStatus: "WARNING", alertReason: "Silent after connectivity last call (signal lost)" }],
-    [330, { alertType: "connectivity_last_call", alertStatus: "OK", alertReason: null, signalLevel: 0, previousSignalLevel: 2, signalDbm: -121, networkType: "none", batteryLevel: 0.42, pendingEventCount: 5 }],
-    [400, { alertType: "connectivity_degraded", alertStatus: "OK", alertReason: null, signalLevel: 2, previousSignalLevel: 4, signalDbm: -104, networkType: "cellular", batteryLevel: 0.43, pendingEventCount: 0 }],
+    [60, { alertType: "presence_offline", alertStatus: "CRITICAL", alertReason: "Silent after connectivity last call (signal lost)", silentSeconds: 270, lastCallType: "connectivity" }],
+    [330, { alertType: "connectivity_last_call", alertStatus: "OK", alertReason: null, signalLevel: 0, previousSignalLevel: 2, signalDbm: -121, networkType: "none", batteryLevel: 42, pendingEventCount: 5 }],
+    [400, { alertType: "connectivity_degraded", alertStatus: "OK", alertReason: null, signalLevel: 2, previousSignalLevel: 4, signalDbm: -104, networkType: "cellular", batteryLevel: 43, pendingEventCount: 0 }],
   ],
 };
 

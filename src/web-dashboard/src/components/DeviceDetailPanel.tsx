@@ -13,7 +13,7 @@ import {
 } from "../lib/format";
 import type { DeviceAlertsResult } from "../api";
 import { hasGpsFix } from "../lib/location";
-import { formatSignal } from "../lib/signal";
+import { LAST_CALL_LABELS, activeLastCall, formatSignal } from "../lib/signal";
 import { alertStyle, groupInfo, isSuspect, lastSeenOf, type StatusGroup } from "../lib/status";
 import type { Device, DeviceLocation, TelemetryRecord } from "../types";
 import { BatteryChart } from "./BatteryChart";
@@ -58,14 +58,11 @@ export function DeviceDetailPanel({
   const lastSeen = formatAgo(parseTime(lastSeenOf(device)), now);
   const loc = hasGpsFix(device) ? device.location! : null;
   const heading = device.heading ?? null;
-  const hasSignal = typeof device.signalLevel === "number" || !!device.networkType;
-  const lastKnown = device.lastKnownLocation ?? null;
-  const lastCallLabel =
-    device.lastCallType === "battery"
-      ? "Battery last call"
-      : device.lastCallType === "connectivity"
-        ? "Signal lost"
-        : "Last call";
+  const signal = device.signal ?? null;
+  // Shown only while the last call is still the final thing the phone sent.
+  const lastCall = activeLastCall(device);
+  const lastKnown = lastCall?.location ?? null;
+  const lastCallLabel = lastCall ? LAST_CALL_LABELS[lastCall.type] : "Last call";
   const connection = offline
     ? { text: "Offline", cls: "text-slate-400" }
     : suspect
@@ -166,12 +163,12 @@ export function DeviceDetailPanel({
               <Row label="Speed / heading" value={`${formatSpeed(heading.speedMps)} · ${formatHeading(heading.degrees)}`} />
             )}
             <Row label="Connection" value={connection.text} valueClass={connection.cls} />
-            {hasSignal && (
+            {signal && (
               <div className="flex items-center justify-between gap-2 py-1.5 border-b border-line/40">
                 <span className="text-slate-400 text-[11px]">Network</span>
                 <span className="flex items-center gap-2 font-medium text-[11px] text-slate-200 text-right">
-                  <SignalBars level={device.signalLevel} networkType={device.networkType} dbm={device.signalDbm} />
-                  {formatSignal(device.signalLevel, device.networkType, device.signalDbm)}
+                  <SignalBars level={signal.level} networkType={signal.networkType} dbm={signal.dbm} />
+                  {formatSignal(signal.level, signal.networkType, signal.dbm)}
                 </span>
               </div>
             )}

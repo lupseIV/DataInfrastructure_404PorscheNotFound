@@ -170,9 +170,9 @@ export function DeviceSidebar({
                   <span className="flex items-center gap-1.5 shrink-0">
                     {!offline && (
                       <SignalBars
-                        level={device.signalLevel}
-                        networkType={device.networkType}
-                        dbm={device.signalDbm}
+                        level={device.signal?.level}
+                        networkType={device.signal?.networkType}
+                        dbm={device.signal?.dbm}
                         size={10}
                       />
                     )}

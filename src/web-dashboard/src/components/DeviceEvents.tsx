@@ -75,7 +75,7 @@ export function DeviceEvents({ alerts, loading, error, now, onShowOnMap }: Devic
                   className="mt-1 inline-flex items-center gap-1 text-[10px] font-mono text-blue-400 hover:text-blue-300"
                 >
                   <Icon name="location_on" className="text-[12px]" />
-                  {record.lastKnownLocation ? "Show last known position" : "Show on map"}
+                  {record.lastKnownLocation || record.alertType === "presence_offline" ? "Show last known position" : "Show on map"}
                 </button>
               )}
             </div>

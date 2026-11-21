@@ -1,7 +1,8 @@
 // Display helpers for the network signal and the device events (alerts endpoint).
 // Nothing here decides an alert: the phone and the backend do that; this only labels them.
 
-import type { AlertRecord, AlertType, DeviceLocation, NetworkType } from "../types";
+import { parseTime } from "./format";
+import type { AlertRecord, AlertType, Device, DeviceLocation, LastCallType, NetworkType } from "../types";
 
 const NETWORK_LABELS: Record<NetworkType, string> = {
   wifi: "Wi-Fi",
@@ -53,13 +54,36 @@ export const TONE_CLASSES: Record<EventTone, { icon: string; text: string; edge:
   ok: { icon: "bg-primary/15 text-primary", text: "text-primary", edge: "border-l-primary" },
 };
 
-/**
- * Battery level of an event as a percent. The contract's example shows a percent (9.0) while
- * stored events hold the phone's 0–1 ratio, so values ≤ 1 are treated as a ratio.
- */
+/** Battery level of an event in percent (the API already converts the stored ratio). */
 export function eventBatteryPercent(value: number | null | undefined): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) return null;
-  return value <= 1 ? value * 100 : value;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export const LAST_CALL_LABELS: Record<LastCallType, string> = {
+  battery: "Battery last call",
+  connectivity: "Signal lost",
+};
+
+/**
+ * The device's last call, only while it is still the final thing received (Contract F:
+ * `lastCallAt >= lastEventTimestamp`). A last call followed by newer data is stale: the phone
+ * kept working, so its last known position is no longer interesting.
+ */
+export function activeLastCall(device: Device): { type: LastCallType; location: DeviceLocation } | null {
+  if (!device.lastCallType || !device.lastKnownLocation) return null;
+  const callAt = parseTime(device.lastCallAt);
+  const dataAt = parseTime(device.lastUpdated);
+  if (callAt !== null && dataAt !== null && callAt < dataAt) return null;
+  return { type: device.lastCallType, location: device.lastKnownLocation };
+}
+
+/** "4m 19s", "1h 05m" */
+export function formatSilence(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
 /** Position to show for an event: the last known one for last calls, else the live one. */
@@ -70,12 +94,30 @@ export function eventLocation(record: AlertRecord): DeviceLocation | null {
 /** One-line details of an event, e.g. "Signal 3 → 1 bars · -109 dBm · Cellular". */
 export function eventDetails(record: AlertRecord): string {
   const parts: string[] = [];
+  if (record.alertType === "presence_offline") {
+    // alertReason holds the cause, e.g. "Silent after battery last call (likely battery dead)".
+    if (record.alertReason) parts.push(record.alertReason);
+    if (typeof record.silentSeconds === "number") parts.push(`silent ${formatSilence(record.silentSeconds)}`);
+    return parts.join(" · ");
+  }
+  if (record.alertType === "presence_recovered") {
+    const offlineAt = parseTime(record.offlineAlertSentAt);
+    const backAt = parseTime(record.timestamp);
+    if (offlineAt !== null && backAt !== null && backAt >= offlineAt) {
+      parts.push(`Offline for ${formatSilence((backAt - offlineAt) / 1000)}`);
+    }
+    return parts.join(" · ");
+  }
   if (typeof record.previousSignalLevel === "number" && typeof record.signalLevel === "number") {
     parts.push(`Signal ${record.previousSignalLevel} → ${record.signalLevel} bars`);
   } else if (typeof record.signalLevel === "number") {
     parts.push(`Signal ${record.signalLevel}/4 bars`);
   }
-  if (typeof record.signalDbm === "number") parts.push(`${Math.round(record.signalDbm)} dBm`);
+  if (typeof record.previousSignalDbm === "number" && typeof record.signalDbm === "number") {
+    parts.push(`${Math.round(record.previousSignalDbm)} → ${Math.round(record.signalDbm)} dBm`);
+  } else if (typeof record.signalDbm === "number") {
+    parts.push(`${Math.round(record.signalDbm)} dBm`);
+  }
   if (record.networkType) parts.push(formatNetwork(record.networkType));
   const battery = eventBatteryPercent(record.batteryLevel);
   if (battery !== null) parts.push(`Battery ${Math.round(battery)}%`);
