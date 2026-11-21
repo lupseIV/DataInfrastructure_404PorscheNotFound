@@ -4,7 +4,6 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'config.dart';
 import 'device_identity.dart';
 import 'telemetry_service.dart';
 
@@ -31,6 +30,14 @@ class _Palette {
   Color get glassStrong => dark
       ? Colors.white.withValues(alpha: 0.16)
       : Colors.white.withValues(alpha: 0.66);
+  // Near-opaque "glass-look" fills for tiles that skip the real backdrop blur
+  // (keeps the look but avoids an expensive BackdropFilter per card).
+  Color get glassSolid => dark
+      ? const Color(0xFF1C1E2C).withValues(alpha: 0.82)
+      : Colors.white.withValues(alpha: 0.86);
+  Color get glassSolidStrong => dark
+      ? const Color(0xFF24263A).withValues(alpha: 0.90)
+      : Colors.white.withValues(alpha: 0.92);
   Color get border => dark
       ? Colors.white.withValues(alpha: 0.18)
       : Colors.white.withValues(alpha: 0.75);
@@ -154,9 +161,10 @@ class _TelemetryScreenState extends State<TelemetryScreen>
                       running: svc.running,
                     ),
                     Expanded(
-                      child: ListView(
+                      child: Padding(
                         padding: const EdgeInsets.fromLTRB(16, 4, 16, 110),
-                        children: [
+                        child: Column(
+                          children: [
                           _StatusHero(
                             look: look,
                             running: svc.running,
@@ -207,13 +215,8 @@ class _TelemetryScreenState extends State<TelemetryScreen>
                               ),
                             ],
                           ),
-                          const SizedBox(height: 18),
-                          _DeviceCard(
-                            endpoint: AppConfig.ingestionUrl,
-                            apiKeySet: AppConfig.apiKey.isNotEmpty,
-                            intervalSeconds: AppConfig.sendIntervalSeconds,
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ],
@@ -305,6 +308,7 @@ class _Glass extends StatelessWidget {
     this.radius = _radius,
     this.tint,
     this.strong = false,
+    this.blur = false,
   });
 
   final Widget child;
@@ -313,76 +317,93 @@ class _Glass extends StatelessWidget {
   final Color? tint;
   final bool strong;
 
+  /// When true, render a real `BackdropFilter` (expensive). Small tiles leave
+  /// this false and use a near-opaque fill that looks the same but rasterises
+  /// far cheaper — only the big hero + action bar pay for live blur.
+  final bool blur;
+
   @override
   Widget build(BuildContext context) {
     final p = _Palette.of(context);
     final shape = BorderRadius.circular(radius);
-    return DecoratedBox(
-      // Soft outer shadow to lift the glass off the backdrop.
+    // The surface contents (fill + sheen + tint + child) are identical whether
+    // or not we blur; only big surfaces wrap this in a live BackdropFilter.
+    final surface = Container(
       decoration: BoxDecoration(
+        color: blur
+            ? (strong ? p.glassStrong : p.glass)
+            : (strong ? p.glassSolidStrong : p.glassSolid),
         borderRadius: shape,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: p.dark ? 0.35 : 0.10),
-            blurRadius: 24,
-            offset: const Offset(0, 12),
-          ),
-        ],
+        border: Border.all(color: p.border, width: 1),
       ),
-      child: ClipRRect(
-        borderRadius: shape,
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 26, sigmaY: 26),
-          child: Container(
-            decoration: BoxDecoration(
-              color: strong ? p.glassStrong : p.glass,
-              borderRadius: shape,
-              border: Border.all(color: p.border, width: 1),
+      child: Stack(
+        children: [
+          // Top-left sheen — the signature liquid-glass highlight.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: shape,
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Colors.white.withValues(alpha: p.dark ? 0.14 : 0.40),
+                      Colors.white.withValues(alpha: 0.0),
+                    ],
+                    stops: const [0.0, 0.55],
+                  ),
+                ),
+              ),
             ),
-            child: Stack(
-              children: [
-                // Top-left sheen — the signature liquid-glass highlight.
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        borderRadius: shape,
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Colors.white.withValues(alpha: p.dark ? 0.14 : 0.40),
-                            Colors.white.withValues(alpha: 0.0),
-                          ],
-                          stops: const [0.0, 0.55],
-                        ),
-                      ),
+          ),
+          // Optional status colour wash.
+          if (tint != null)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: shape,
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        tint!.withValues(alpha: 0.26),
+                        tint!.withValues(alpha: 0.05),
+                      ],
                     ),
                   ),
                 ),
-                // Optional status colour wash.
-                if (tint != null)
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          borderRadius: shape,
-                          gradient: LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [
-                              tint!.withValues(alpha: 0.26),
-                              tint!.withValues(alpha: 0.05),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                Padding(padding: padding, child: child),
-              ],
+              ),
             ),
-          ),
+          Padding(padding: padding, child: child),
+        ],
+      ),
+    );
+
+    // RepaintBoundary isolates each card so a sibling's repaint (e.g. the
+    // ticking accel bars) doesn't re-rasterise this whole surface.
+    return RepaintBoundary(
+      child: DecoratedBox(
+        // Soft outer shadow to lift the glass off the backdrop.
+        decoration: BoxDecoration(
+          borderRadius: shape,
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: p.dark ? 0.35 : 0.10),
+              blurRadius: 24,
+              offset: const Offset(0, 12),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: shape,
+          child: blur
+              ? BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                  child: surface,
+                )
+              : surface,
         ),
       ),
     );
@@ -553,6 +574,7 @@ class _StatusHero extends StatelessWidget {
     return _Glass(
       tint: look.color,
       strong: true,
+      blur: true, // the hero is the one surface that keeps live backdrop blur
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -684,19 +706,24 @@ class _PulseDot extends StatelessWidget {
         alignment: Alignment.center,
         children: [
           if (animate)
-            AnimatedBuilder(
-              animation: controller,
-              builder: (context, child) {
-                final t = controller.value;
-                return Container(
-                  height: 38 + 16 * t,
-                  width: 38 + 16 * t,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: color.withValues(alpha: 0.22 * (1 - t)),
-                  ),
-                );
-              },
+            // Own layer so the 60fps pulse repaints only itself — without this
+            // every frame invalidates the hero's BackdropFilter above it and
+            // re-blurs the whole backdrop.
+            RepaintBoundary(
+              child: AnimatedBuilder(
+                animation: controller,
+                builder: (context, child) {
+                  final t = controller.value;
+                  return Container(
+                    height: 38 + 16 * t,
+                    width: 38 + 16 * t,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: color.withValues(alpha: 0.22 * (1 - t)),
+                    ),
+                  );
+                },
+              ),
             ),
           Container(
             height: 46,
@@ -1039,116 +1066,6 @@ class _AxisBar extends StatelessWidget {
               fontWeight: FontWeight.w600,
               color: p.text,
               fontFeatures: const [FontFeature.tabularFigures()],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// ---------------------------------------------------------------------------
-/// Device / connection
-/// ---------------------------------------------------------------------------
-class _DeviceCard extends StatelessWidget {
-  const _DeviceCard({
-    required this.endpoint,
-    required this.apiKeySet,
-    required this.intervalSeconds,
-  });
-
-  final String endpoint;
-  final bool apiKeySet;
-  final int intervalSeconds;
-
-  @override
-  Widget build(BuildContext context) {
-    final p = _Palette.of(context);
-    return _Glass(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.settings_ethernet_rounded, size: 18, color: p.subtext),
-              const SizedBox(width: 8),
-              Text(
-                'Connection',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.3,
-                  color: p.subtext,
-                ),
-              ),
-              const Spacer(),
-              _KeyChip(set: apiKeySet),
-            ],
-          ),
-          const SizedBox(height: 12),
-          _Kv(label: 'Endpoint', value: endpoint),
-          const SizedBox(height: 8),
-          _Kv(label: 'Interval', value: '${intervalSeconds}s'),
-        ],
-      ),
-    );
-  }
-}
-
-class _KeyChip extends StatelessWidget {
-  const _KeyChip({required this.set});
-  final bool set;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = set ? _Palette.ok : _Palette.danger;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.35)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(set ? Icons.vpn_key_rounded : Icons.key_off_rounded,
-              size: 13, color: color),
-          const SizedBox(width: 5),
-          Text(
-            set ? 'API key set' : 'Key missing',
-            style: TextStyle(
-                fontSize: 11.5, fontWeight: FontWeight.w700, color: color),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Kv extends StatelessWidget {
-  const _Kv({required this.label, required this.value});
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final p = _Palette.of(context);
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 78,
-          child: Text(label, style: TextStyle(fontSize: 13, color: p.subtext)),
-        ),
-        Expanded(
-          child: Text(
-            value,
-            style: TextStyle(
-              fontSize: 13,
-              fontFamily: 'monospace',
-              height: 1.35,
-              color: p.text,
             ),
           ),
         ),
