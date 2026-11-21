@@ -6,8 +6,8 @@
   },
   "context": {
     "projectName": "fleet-telemetry",
-    "region": "eu-central-1",
-    "lambdaReservedConcurrency": 2,
+    "region": "eu-west-1",
+    "lambdaReservedConcurrency": 0,
     "githubRepo": "lupseIV/DataInfrastructure_404PorscheNotFound"
   }
 }
