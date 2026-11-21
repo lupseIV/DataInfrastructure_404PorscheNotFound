@@ -26,7 +26,8 @@ stacks, workflows, configuration, how to deploy and troubleshoot.
 DataInfrastructure_404PorscheNotFound/
 ├── src/
 │   ├── mobile-app/tele/   # Flutter phone app: reads battery/charging/acceleration, sends JSON events
-│   ├── backend/           # Python Lambda handlers (ingest, processor, query, battery, connectivity) + tests
+│   ├── backend/           # Python Lambdas, one self-contained folder each: functions/<name>/
+│   │                      #   (ingest, processor, query, battery, connectivity, presence) + tests
 │   └── web-dashboard/     # React + Vite dashboard: device list, latest values, history
 ├── infrastructure/        # AWS CDK app (TypeScript)
 │   ├── bin/app.ts         # Stack wiring and deploy order
@@ -36,7 +37,6 @@ DataInfrastructure_404PorscheNotFound/
 │       └── naming.ts      # Fixed resource names shared by the stacks
 ├── .github/workflows/     # CI/CD, prefixed by area: infra-*, web-*, mobile-*
 ├── .github/actions/       # Shared workflow steps: setup-cdk, aws-login
-├── .github/scripts/       # affected_lambdas.py: which Lambdas a change affects
 ├── docs/                  # Infrastructure and deployment documentation
 ├── presentation/          # Final presentation: DataInfrastructure_404PorscheNotFound.pptx
 └── README.md

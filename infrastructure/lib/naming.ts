@@ -6,7 +6,7 @@
  * deployed on its own without CloudFormation blocking the change.
  */
 
-/** Lambda functions of the backend. The name is also the handler module: handlers/<name>.py */
+/** Lambda functions of the backend. The name is also the code folder: src/backend/functions/<name>/handler.py */
 export const FUNCTION_NAMES = ['ingest', 'processor', 'query', 'battery', 'connectivity', 'presence'] as const;
 export type FunctionName = (typeof FUNCTION_NAMES)[number];
 

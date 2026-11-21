@@ -10,6 +10,7 @@ name: Infra / Deploy stacks and Lambdas
 #
 # - Pull requests: checks only (tsc + synth, Python compile + tests).
 # - main (merge): "plan" runs cdk diff per stack and finds the Lambdas the change affects.
+#   A Lambda is affected when a file in its folder (src/backend/functions/<name>/) changed.
 #   Only stacks with differences and affected Lambdas get a job; each one pauses on its GitHub
 #   environment (stack-web ... stack-api, lambda-ingest ... lambda-presence) until someone
 #   approves it under "Review deployments".
@@ -27,14 +28,12 @@ on:
       - 'src/backend/**'
       - '.github/workflows/infra-deploy*.yml'
       - '.github/actions/**'
-      - '.github/scripts/**'
   pull_request:
     paths:
       - 'infrastructure/**'
       - 'src/backend/**'
       - '.github/workflows/infra-deploy*.yml'
       - '.github/actions/**'
-      - '.github/scripts/**'
   workflow_dispatch:
     inputs:
       stacks:
@@ -104,17 +103,14 @@ jobs:
       - name: Install test tools
         run: pip install -r src/backend/requirements-dev.txt pytest
 
-      - name: Compile handlers
+      - name: Compile functions
         working-directory: src/backend
-        run: python -m compileall -q handlers
+        run: python -m compileall -q functions
 
       - name: Backend tests
         if: hashFiles('src/backend/tests/**/*.py') != ''
         working-directory: src/backend
         run: python -m pytest tests
-
-      - name: Affected-Lambdas script tests
-        run: python -m pytest .github/scripts -q
 
   plan:
     name: Plan (stack diffs + affected Lambdas)
@@ -218,30 +214,39 @@ jobs:
         id: functions
         env:
           BEFORE: ${{ github.event.before }}
+        # Every Lambda bundles its own code in src/backend/functions/<name>/, so the folder that
+        # changed is the Lambda to offer.
         run: |
-          script=.github/scripts/affected_lambdas.py
-          out="$RUNNER_TEMP/functions.txt"
+          all=$(cd src/backend/functions && for d in */; do [ -f "$d/handler.py" ] && echo "${d%/}"; done)
           case "$LAMBDAS" in
             affected)
               if [ -z "$BEFORE" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
                 echo "Previous commit unknown, offering every function."
-                python "$script" --all > "$out"
+                chosen="$all"
               else
-                git diff --name-only "$BEFORE" "$GITHUB_SHA" | python "$script" > "$out"
+                changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+                if grep -qx 'src/backend/functions/__init__.py' <<< "$changed"; then
+                  chosen="$all"
+                else
+                  chosen=$(for fn in $all; do if grep -q "^src/backend/functions/$fn/" <<< "$changed"; then echo "$fn"; fi; done)
+                fi
               fi ;;
-            all)  python "$script" --all > "$out" ;;
-            none) python "$script" < /dev/null > "$out" ;;
-            *)    # one function picked by hand
-              python "$script" < /dev/null | grep -v '^functions=' \
-                | sed -E "s/^$LAMBDAS=false$/$LAMBDAS=true/" > "$out"
-              echo "functions=$LAMBDAS" >> "$out" ;;
+            all)  chosen="$all" ;;
+            none) chosen="" ;;
+            *)    chosen="$LAMBDAS" ;;
           esac
+          out="$RUNNER_TEMP/functions.txt"
+          : > "$out"
+          for fn in $all; do
+            if grep -qx "$fn" <<< "$chosen"; then echo "$fn=true"; else echo "$fn=false"; fi >> "$out"
+          done
+          echo "functions=$(echo $chosen)" >> "$out"
           cat "$out" | tee -a "$GITHUB_OUTPUT"
 
       - name: Summary
         run: |
-          stacks=$(grep '=true$' "$RUNNER_TEMP/stacks.txt" | cut -d= -f1 | xargs)
-          functions=$(grep '^functions=' "$RUNNER_TEMP/functions.txt" | cut -d= -f2)
+          stacks=$(sed -n 's/=true$//p' "$RUNNER_TEMP/stacks.txt" | xargs) # sed, not grep: no match is not an error
+          functions=$(sed -n 's/^functions=//p' "$RUNNER_TEMP/functions.txt")
           {
             echo "## Offered for deployment"
             echo "- Stacks (\`$STACKS\`): ${stacks:-none}"

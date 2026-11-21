@@ -49,7 +49,7 @@ export interface TelemetryFunctionsProps {
 
 /**
  * Thresholds of the event Lambdas (Contracts D1 to E2), passed as environment variables.
- * The values match the defaults in src/backend/handlers/event_validation.py.
+ * The values match the defaults in src/backend/functions/battery/validation.py and connectivity/validation.py.
  */
 const BATTERY_THRESHOLDS: Record<string, string> = {
   BATTERY_LOW_THRESHOLD: '0.20',
@@ -61,14 +61,18 @@ const CONNECTIVITY_THRESHOLDS: Record<string, string> = {
   SIGNAL_DROP_WINDOW_SECONDS: '60',
   SIGNAL_LOST_DBM: '-110',
 };
-/** Contract F timers; the values match the defaults in src/backend/handlers/rules.py. */
+/** Contract F timers; the values match the defaults in src/backend/functions/presence/rules.py. */
 const PRESENCE_SETTINGS: Record<string, string> = {
   SUSPECT_AFTER_SECONDS: '60',
   OFFLINE_GRACE_SECONDS: '240',
 };
 
 /**
- * The Python Lambdas of the backend. Code lives in src/backend/handlers.
+ * The Python Lambdas of the backend. Code lives in src/backend:
+ *   functions/<name>/handler.py  entry point of each function (handler "functions.<name>.handler.handler")
+ * There is no shared package: each function folder bundles every module it needs (helper
+ * modules are copied, see src/backend/tests/test_copies.py). Each function is packaged with only
+ * its own folder, so changing one folder changes only that function's code and CloudFormation diff.
  *
  * - ingest:    POST /api/telemetry -> SQS FIFO queue
  * - processor: SQS FIFO queue -> DynamoDB snapshots
@@ -92,11 +96,21 @@ export class TelemetryFunctions extends Construct {
     super(scope, id);
 
     const reserved = props.reservedConcurrency ?? 2;
-    const backendCode = lambda.Code.fromAsset(path.join(__dirname, '..', '..', '..', 'src', 'backend'), {
-      exclude: ['__pycache__', '*.pyc', '.venv', '.idea', 'tests', 'README.md', 'requirements-dev.txt', '.gitignore'],
-    });
+    const backendDir = path.join(__dirname, '..', '..', '..', 'src', 'backend');
+    // Package layout (same as the Lambda code jobs in .github/workflows/infra-deploy-lambda.yml):
+    //   functions/__init__.py, functions/<name>/
+    const codeFor = (name: FunctionName) =>
+      lambda.Code.fromAsset(backendDir, {
+        exclude: [
+          // nothing outside functions/
+          'tests', 'requirements*.txt', 'README.md', '.gitignore', '.pytest_cache', '.venv', '.idea',
+          // only this function's folder
+          'functions/*', '!functions/__init__.py', `!functions/${name}`,
+          '__pycache__', '*.pyc',
+        ],
+      });
 
-    const createFunction = (name: FunctionName, handler: string, timeout: cdk.Duration, environment: Record<string, string>) => {
+    const createFunction = (name: FunctionName, timeout: cdk.Duration, environment: Record<string, string>) => {
       const functionName = fullFunctionName(props.projectName, name);
       // "battery-last-call" -> "BatteryLastCallFunction"; single-word names give the same ids as before.
       const pascal = name.split('-').map((part) => part[0].toUpperCase() + part.slice(1)).join('');
@@ -104,8 +118,8 @@ export class TelemetryFunctions extends Construct {
         functionName,
         runtime: lambda.Runtime.PYTHON_3_13,
         architecture: lambda.Architecture.ARM_64,
-        code: backendCode,
-        handler,
+        code: codeFor(name),
+        handler: `functions.${name}.handler.handler`,
         memorySize: 256,
         timeout,
         environment,
@@ -125,13 +139,13 @@ export class TelemetryFunctions extends Construct {
       LATEST_TABLE: props.tables.latestTable.tableName,
     };
 
-    this.ingestFunction = createFunction('ingest', 'handlers.ingest.handler', cdk.Duration.seconds(10), {
+    this.ingestFunction = createFunction('ingest', cdk.Duration.seconds(10), {
       QUEUE_URL: props.events.queue.queueUrl,
       ALLOWED_ORIGIN: props.allowedOrigin,
     });
     props.events.queue.grantSendMessages(this.ingestFunction);
 
-    this.processorFunction = createFunction('processor', 'handlers.processor.handler', PROCESSOR_TIMEOUT, tableEnv);
+    this.processorFunction = createFunction('processor', PROCESSOR_TIMEOUT, tableEnv);
     props.tables.snapshotsTable.grantReadWriteData(this.processorFunction);
     props.tables.latestTable.grantReadWriteData(this.processorFunction);
     this.processorFunction.addEventSource(
@@ -142,7 +156,7 @@ export class TelemetryFunctions extends Construct {
       }),
     );
 
-    this.queryFunction = createFunction('query', 'handlers.query.handler', cdk.Duration.seconds(10), {
+    this.queryFunction = createFunction('query', cdk.Duration.seconds(10), {
       ...tableEnv,
       ALERTS_TABLE: props.tables.alertsTable.tableName,
       ALLOWED_ORIGIN: props.allowedOrigin,
@@ -153,8 +167,8 @@ export class TelemetryFunctions extends Construct {
 
     // Event Lambdas (Contracts D1 to E2): each writes an alert row and updates the device's
     // latest item, so they only need write access to the two tables.
-    const createEventFunction = (name: FunctionName, handler: string, thresholds: Record<string, string>) => {
-      const fn = createFunction(name, handler, cdk.Duration.seconds(10), {
+    const createEventFunction = (name: FunctionName, thresholds: Record<string, string>) => {
+      const fn = createFunction(name, cdk.Duration.seconds(10), {
         ALERTS_TABLE: props.tables.alertsTable.tableName,
         LATEST_TABLE: props.tables.latestTable.tableName,
         ALLOWED_ORIGIN: props.allowedOrigin,
@@ -165,17 +179,13 @@ export class TelemetryFunctions extends Construct {
       return fn;
     };
 
-    this.batteryFunction = createEventFunction('battery', 'handlers.battery.handler', BATTERY_THRESHOLDS);
-    this.connectivityFunction = createEventFunction(
-      'connectivity',
-      'handlers.connectivity.handler',
-      CONNECTIVITY_THRESHOLDS,
-    );
+    this.batteryFunction = createEventFunction('battery', BATTERY_THRESHOLDS);
+    this.connectivityFunction = createEventFunction('connectivity', CONNECTIVITY_THRESHOLDS);
 
     // Presence (Contract F): scans the latest table every minute and writes presenceState
     // plus presence_offline / presence_recovered rows. Its writes are conditional, so two
     // overlapping runs are harmless and no reserved concurrency is needed.
-    this.presenceFunction = createFunction('presence', 'handlers.presence.handler', cdk.Duration.seconds(30), {
+    this.presenceFunction = createFunction('presence', cdk.Duration.seconds(30), {
       LATEST_TABLE: props.tables.latestTable.tableName,
       ALERTS_TABLE: props.tables.alertsTable.tableName,
       ...PRESENCE_SETTINGS,

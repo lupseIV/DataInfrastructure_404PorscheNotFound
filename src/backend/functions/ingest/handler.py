@@ -6,7 +6,8 @@ import base64
 import json
 import os
 
-from .validation import ValidationError, normalize_events, validate_events
+from .contract_a import normalize_events, validate_events
+from .checks import ValidationError
 
 _sqs = None
 MAX_EVENTS_PER_MESSAGE = 200  # keeps each SQS message far below the 256 KB limit

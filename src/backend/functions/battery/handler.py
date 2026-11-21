@@ -3,8 +3,9 @@
   POST /api/events/battery-low        status: battery at or below the low threshold
   POST /api/events/battery-last-call  last call before the phone runs out of battery
 """
-from .event_common import dispatch, last_known_location
-from .event_validation import validate_battery_last_call, validate_battery_low
+from .events import dispatch, last_known_location
+
+from .validation import validate_battery_last_call, validate_battery_low
 
 ROUTES = {
     "battery-low": {

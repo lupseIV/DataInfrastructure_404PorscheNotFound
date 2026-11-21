@@ -7,7 +7,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from handlers import query  # noqa: E402
+from functions.query import handler as query  # noqa: E402
 
 TS = "2026-11-21T14:02:10Z"
 LOC = {"lat": Decimal("46.77"), "lon": Decimal("23.59"), "accuracyM": Decimal("8"), "capturedAt": "2026-11-21T14:02:08Z"}

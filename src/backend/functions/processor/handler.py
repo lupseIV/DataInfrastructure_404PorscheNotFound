@@ -6,9 +6,11 @@ from datetime import datetime, timezone
 
 import boto3
 
-from .event_common import _is_condition_failed, to_dynamo
-from .rules import build_snapshot, normalize_timestamp
-from .validation import normalize_events, validate_events
+from .contract_a import normalize_events, validate_events
+from .dynamo import is_condition_failed, to_dynamo
+from .travel import normalize_timestamp
+
+from .snapshot import build_snapshot
 
 HISTORY_TTL_SECONDS = 7 * 24 * 3600
 
@@ -84,7 +86,7 @@ def update_liveness(latest_table, device_id, received_at, newest_event_ts):
                 ExpressionAttributeValues=values,
             )
         except Exception as ex:
-            if not _is_condition_failed(ex):
+            if not is_condition_failed(ex):
                 raise
 
 

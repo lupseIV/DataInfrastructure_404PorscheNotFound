@@ -108,17 +108,67 @@ sequenceDiagram
 | **SQS FIFO** (`fleet-telemetry-events.fifo`) | Buffer between ingestion and processing | Ordered per device (`MessageGroupId = deviceId`), content-based dedup (5 min), visibility 180 s |
 | **DLQ** (`fleet-telemetry-events-dlq.fifo`) | Messages that failed 3 times | Kept 14 days; alarm `fleet-telemetry-events-dlq-not-empty` |
 | **λ processor** | Builds health snapshots (drain rate etc.) | SQS trigger: batch 10, max 2 concurrent, partial batch failures |
-| **λ query** | `GET /api/devices`, `GET /api/devices/{deviceId}/telemetry` | Read-only on snapshots + latest |
+| **λ query** | `GET /api/devices`, `/api/devices/{deviceId}/telemetry`, `/api/devices/{deviceId}/alerts` | Read-only on snapshots, latest and alerts |
 | **λ battery** | `POST /api/events/battery-low`, `/battery-last-call` | Thresholds 0.20 / 0.10 |
 | **λ connectivity** | `POST /api/events/connectivity-degraded`, `/connectivity-last-call` | Drop of 2 bars in 60 s, lost below −110 dBm |
+| **λ presence** | Every minute (EventBridge): marks silent devices SUSPECT / OFFLINE | Suspect after 60 s, offline after 240 s more; no retries |
 | **DynamoDB** `snapshots` | Full history per device | PK `deviceId`, SK `timestamp`, TTL `expiresAt` |
 | **DynamoDB** `latest` | Newest snapshot per device | PK `deviceId` |
 | **DynamoDB** `alerts` | Last-call, status and presence events | PK `deviceId`, SK `<timestamp>#<alertType>`, TTL `expiresAt` |
 | **S3 + CloudFront** | Hosts the dashboard at `/dashboard/` | Private bucket (origin access control); `/` redirects to `/dashboard/` |
 
-All Lambdas run Python 3.13 on ARM64 with 256 MB, share one code package (`src/backend`),
-and log to `/aws/lambda/<function>` (kept one week). Tables are on-demand, capped at
+All Lambdas run Python 3.13 on ARM64 with 256 MB and log to `/aws/lambda/<function>` (kept one
+week). Tables are on-demand, capped at
 100 read/write units per second each.
+
+### Lambda code layout
+
+```text
+src/backend/
+├── functions/                one self-contained folder per Lambda (no shared package)
+│   ├── ingest/               handler.py, checks.py, contract_a.py
+│   ├── processor/            handler.py, snapshot.py, checks.py, contract_a.py, dynamo.py, travel.py
+│   ├── query/                handler.py
+│   ├── battery/              handler.py, validation.py, checks.py, dynamo.py, travel.py, events.py, event_body.py
+│   ├── connectivity/         handler.py, validation.py, checks.py, dynamo.py, travel.py, events.py, event_body.py
+│   └── presence/             handler.py, rules.py, checks.py, dynamo.py
+├── tests/                    unittest / pytest, run from src/backend (includes test_copies.py)
+└── requirements.txt          runtime deps (boto3 is in the Lambda runtime, nothing is bundled)
+```
+
+Every function folder bundles **all** the code that function runs, and is packaged on its own
+(CDK asset in `telemetry-functions.ts`, and the same zip in the Lambda code jobs). The handler
+setting is `functions.<name>.handler.handler`; modules import each other with
+`from .<module> import ...`.
+
+Function-specific modules:
+
+| Module | Function | Contains |
+|---|---|---|
+| `snapshot.py` | processor | health snapshot rules (activity, drain rate, alert status) |
+| `validation.py` | battery | Contracts D1, D2 + battery thresholds |
+| `validation.py` | connectivity | Contracts E1, E2 + signal thresholds |
+| `rules.py` | presence | Contract F presence rules and timers |
+
+Helper modules that several functions need are **copied** into each of them:
+
+| Helper module | Contains | Copied into |
+|---|---|---|
+| `checks.py` | basic checks: ValidationError, numbers, timestamps, location, heading | ingest, processor, battery, connectivity, presence |
+| `contract_a.py` | Contract A batch validation | ingest, processor |
+| `travel.py` | normalize_timestamp, derive_travel_status | processor, battery, connectivity |
+| `dynamo.py` | to_dynamo, conditional-write check, alert TTL | processor, presence, battery, connectivity |
+| `events.py` | event flow: parse, validate, store, 202 | battery, connectivity |
+| `event_body.py` | body checks common to the event contracts | battery, connectivity |
+
+**The copies must stay identical.** `tests/test_copies.py` fails when two copies of a helper
+differ, or when a copy exists that is not listed in it. To change a helper, edit one copy, copy
+the file over the others, and deploy each function that carries it. Each copy has its own
+`ValidationError` class, so a test must catch the one of the function it calls.
+
+To add a function: create `functions/<name>/__init__.py` and `functions/<name>/handler.py` with
+`def handler(event, context)`, add `<name>` to `FUNCTION_NAMES` in `lib/naming.ts`, create it in
+`telemetry-functions.ts`, and add a `lambda-<name>` job (and environment) to `infra-deploy.yml`.
 
 ### API routes
 
@@ -145,7 +195,7 @@ IAM stack:
 |---|---|---|---|
 | `WebStack` | `fleet-telemetry-web` | S3 bucket, CloudFront, routing function, SSM parameter with the site origin | `lib/stacks/web-stack.ts` |
 | `DataStack` | `fleet-telemetry-data` | 3 DynamoDB tables, SQS queue + DLQ, DLQ alarm | `lib/stacks/data-stack.ts` |
-| `LambdaStack` | `fleet-telemetry-lambdas` | 5 Lambda functions, their roles, log groups, SQS trigger | `lib/stacks/lambda-stack.ts` |
+| `LambdaStack` | `fleet-telemetry-lambdas` | 6 Lambda functions, their roles, log groups, SQS trigger, presence schedule | `lib/stacks/lambda-stack.ts` |
 | `ApiStack` | `fleet-telemetry-api` | REST API, routes, invoke permissions, API key, usage plan | `lib/stacks/api-stack.ts` |
 | `GithubDeployRoleStack` | `fleet-telemetry-github-deploy` | OIDC provider + IAM role used by GitHub Actions | `lib/github-deploy-role-stack.ts` |
 
@@ -203,7 +253,7 @@ with `cdk deploy --exclusively <StackId>`.
 | `lib/constructs/telemetry-tables.ts`, `telemetry-queue.ts`, `lib/stacks/data-stack.ts` | DataStack | Renaming a table/queue also needs LambdaStack |
 | `lib/constructs/telemetry-functions.ts`, `lib/stacks/lambda-stack.ts` | LambdaStack | Settings, env vars, permissions, code |
 | `lib/constructs/telemetry-api.ts`, `lib/stacks/api-stack.ts` | ApiStack | |
-| `src/backend/**` only | lambdas (asset hash) | Approve only the affected Lambda jobs, or the lambdas stack job |
+| `src/backend/functions/<name>/**` | lambdas (that function's package) | Approve that Lambda job, or the lambdas stack job |
 | `lib/naming.ts`, `bin/app.ts`, `cdk.json`, `package*.json` | all four | |
 
 ### Deploy role permissions
@@ -229,8 +279,8 @@ in to it.
 ## 3. GitHub Actions workflows
 
 GitHub only runs workflow files placed directly in `.github/workflows/` (subfolders are
-ignored), so the structure comes from a name prefix per area plus shared pieces in their own
-folders:
+ignored), so the structure comes from a name prefix per area plus shared steps in their own
+folder:
 
 ```text
 .github/
@@ -242,11 +292,9 @@ folders:
 │   ├── infra-deploy-lambda.yml    reusable: code update of one Lambda
 │   ├── web-dashboard-deploy.yml   Web / Dashboard deploy
 │   └── mobile-apk-build.yml       Mobile / APK build
-├── actions/                       shared steps (composite actions)
-│   ├── setup-cdk/                 Node + npm ci in infrastructure/ (cached)
-│   └── aws-login/                 checks AWS_DEPLOY_ROLE_ARN, then assumes the deploy role (OIDC)
-└── scripts/
-    └── affected_lambdas.py        which Lambdas a change affects (+ its tests)
+└── actions/                       shared steps (composite actions)
+    ├── setup-cdk/                 Node + npm ci in infrastructure/ (cached)
+    └── aws-login/                 checks AWS_DEPLOY_ROLE_ARN, then assumes the deploy role (OIDC)
 ```
 
 The display names start with the same area (`Infra /`, `Web /`, `Mobile /`), so the Actions
@@ -297,20 +345,22 @@ flowchart LR
     web --> lstack
     lstack --> api{{"stack api"}}
     web --> api
-    lstack -. "waits, any result" .-> fns{{"Lambda ingest · processor ·<br/>query · battery · connectivity"}}
+    lstack -. "waits, any result" .-> fns{{"Lambda ingest · processor · presence ·<br/>query · battery · connectivity"}}
     plan --> fns
 ```
 
 1. **Checks** – `tsc --noEmit` + `cdk synth`, and for the Lambdas `compileall` + `pytest`
-   (plus the tests of `affected_lambdas.py`). Pull requests stop here.
+   (including the copy check). Pull requests stop here.
 2. **Plan** (only `main`) – runs `cdk diff --exclusively` for each stack (each diff is in the run
    summary, collapsed under the stack's name) and works out which Lambdas to offer. The summary
    ends with the list of offered jobs.
 3. **Stack jobs** – `infra-deploy-stack.yml` runs `cdk deploy <Stack> --exclusively` in the
    environment `stack-<name>`.
-4. **Lambda jobs** – `infra-deploy-lambda.yml` zips `src/backend/handlers`, checks the function
-   exists, runs `update-function-code` for that one function and waits until it is active, in the
-   environment `lambda-<name>`. No CloudFormation run, so it takes seconds.
+4. **Lambda jobs** – `infra-deploy-lambda.yml` zips `functions/<name>/` (the same package CDK
+   builds), checks the function exists and is configured for that layout
+   (handler `functions.<name>.handler.handler`), runs `update-function-code` for that one function
+   and waits until it is active, in the environment `lambda-<name>`. No CloudFormation run, so it
+   takes seconds.
 
 Open the run, click **Review deployments**, tick the jobs you want and **Approve and deploy**;
 reject the others. With required reviewers on the environments (section 4), nothing deploys
@@ -325,24 +375,22 @@ without that click.
   you approve. Waiting for it guarantees that a newly added function exists before its code is
   updated.
 
-**Which Lambdas are offered.** On a merge, the ones the change affects.
-`.github/scripts/affected_lambdas.py` follows the `from .x import` lines in
-`src/backend/handlers`:
+**Which Lambdas are offered.** On a merge, the ones whose folder changed (paths relative to
+`src/backend`):
 
 | Changed file | Lambdas offered |
 |---|---|
-| `handlers/battery.py` (a handler) | battery |
-| `handlers/event_validation.py` | battery, connectivity |
-| `handlers/event_common.py`, `handlers/rules.py` | battery, connectivity, processor |
-| `handlers/validation.py` | battery, connectivity, ingest, processor |
-| `handlers/__init__.py`, `requirements.txt`, a deleted module | all |
-| `tests/**`, `requirements-dev.txt` | none |
+| `functions/<name>/**` | that function |
+| `functions/__init__.py` | all |
+| `tests/**`, `requirements*.txt`, anything else | none |
 
-A Lambda is any module in `handlers/` with a `def handler(`; its name must match the function
+A change to a helper copied into several folders (e.g. all `dynamo.py` copies) offers each of
+those functions. A Lambda is any `functions/<name>/handler.py`; `<name>` must match the function
 name in `lib/naming.ts` (`FUNCTION_NAMES`).
 
-Note that a change to `src/backend/handlers` also changes the **lambdas stack** (CDK builds every
-function from that folder), so a backend merge offers that stack job as well.
+The **lambdas stack** diff follows the same packages: a change in `functions/battery/` changes only
+the battery function in CloudFormation. You can reject the stack job and approve only the Lambda
+jobs.
 
 **Manual runs** (**Run workflow** on `main`):
 
@@ -573,6 +621,7 @@ Notes:
 | LambdaStack / ApiStack: `Unable to fetch parameters [/fleet-telemetry/web/origin]` | WebStack not deployed yet | Deploy WebStack first (or deploy all four together) |
 | ApiStack: `Function not found: fleet-telemetry-...` | LambdaStack not deployed yet | Deploy LambdaStack first |
 | Lambda job: "does not exist yet" | Function not created yet | Approve the lambdas stack job, or run with Stacks = lambdas, then deploy the code |
+| Lambda job: "runs handler 'handlers.<name>.handler'" | Function still configured for the old single-package layout | Deploy the lambdas stack once (it sets the new handler and code together); later code jobs work |
 | Dashboard: CORS errors after WebStack was recreated | Lambda/API still have the old origin | Redeploy LambdaStack and ApiStack |
 | Phone gets 401 | Wrong or old key in the APK | Update `INGESTION_API_KEY`, rebuild the APK |
 | Phone gets 429 | Throttle or the 20 000/day quota | Increase the send interval or the quota (`telemetry-api.ts`) |
