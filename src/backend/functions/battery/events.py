@@ -7,12 +7,10 @@ import base64
 import json
 import os
 from datetime import datetime, timezone
-from decimal import Decimal
 
-from .rules import derive_travel_status, normalize_timestamp
-from .validation import ValidationError
-
-ALERT_TTL_SECONDS = 7 * 24 * 3600
+from .dynamo import ALERT_TTL_SECONDS, is_condition_failed, to_dynamo
+from .travel import derive_travel_status, normalize_timestamp
+from .checks import ValidationError
 
 _ddb = None
 
@@ -24,17 +22,6 @@ def _tables():
 
         _ddb = boto3.resource("dynamodb")
     return _ddb.Table(os.environ["ALERTS_TABLE"]), _ddb.Table(os.environ["LATEST_TABLE"])
-
-
-def to_dynamo(value):
-    """float -> Decimal(str(x)), recursively (boto3 rejects float)."""
-    if isinstance(value, float):
-        return Decimal(str(value))
-    if isinstance(value, dict):
-        return {k: to_dynamo(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [to_dynamo(v) for v in value]
-    return value
 
 
 def response(status, body):
@@ -84,10 +71,6 @@ def build_alert(body, alert_type, alert_status, alert_reason, received_at):
     return item
 
 
-def _is_condition_failed(ex):
-    return getattr(ex, "response", {}).get("Error", {}).get("Code") == "ConditionalCheckFailedException"
-
-
 def update_latest(latest_table, alert, extra=None):
     """Refresh the liveness fields of the device (and `extra`) on its latest item.
 
@@ -111,7 +94,7 @@ def update_latest(latest_table, alert, extra=None):
             ExpressionAttributeValues=to_dynamo(values),
         )
     except Exception as ex:
-        if not _is_condition_failed(ex):
+        if not is_condition_failed(ex):
             raise
         latest_table.update_item(
             Key=key,

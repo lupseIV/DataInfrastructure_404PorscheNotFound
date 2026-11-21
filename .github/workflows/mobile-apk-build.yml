@@ -1,4 +1,4 @@
-name: Mobile APK
+name: Mobile / APK build
 
 # Builds the Flutter phone app (src/mobile-app/tele) into a release APK that sends to the deployed API.
 # - Pull requests: analyze + build without real settings (check only, no key).
@@ -13,11 +13,11 @@ on:
     branches: [main]
     paths:
       - 'src/mobile-app/**'
-      - '.github/workflows/mobile-apk.yml'
+      - '.github/workflows/mobile-apk-build.yml'
   pull_request:
     paths:
       - 'src/mobile-app/**'
-      - '.github/workflows/mobile-apk.yml'
+      - '.github/workflows/mobile-apk-build.yml'
   workflow_dispatch:
     inputs:
       send_interval_seconds:

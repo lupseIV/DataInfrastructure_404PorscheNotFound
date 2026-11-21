@@ -108,17 +108,67 @@ sequenceDiagram
 | **SQS FIFO** (`fleet-telemetry-events.fifo`) | Buffer between ingestion and processing | Ordered per device (`MessageGroupId = deviceId`), content-based dedup (5 min), visibility 180 s |
 | **DLQ** (`fleet-telemetry-events-dlq.fifo`) | Messages that failed 3 times | Kept 14 days; alarm `fleet-telemetry-events-dlq-not-empty` |
 | **λ processor** | Builds health snapshots (drain rate etc.) | SQS trigger: batch 10, max 2 concurrent, partial batch failures |
-| **λ query** | `GET /api/devices`, `GET /api/devices/{deviceId}/telemetry` | Read-only on snapshots + latest |
+| **λ query** | `GET /api/devices`, `/api/devices/{deviceId}/telemetry`, `/api/devices/{deviceId}/alerts` | Read-only on snapshots, latest and alerts |
 | **λ battery** | `POST /api/events/battery-low`, `/battery-last-call` | Thresholds 0.20 / 0.10 |
 | **λ connectivity** | `POST /api/events/connectivity-degraded`, `/connectivity-last-call` | Drop of 2 bars in 60 s, lost below −110 dBm |
+| **λ presence** | Every minute (EventBridge): marks silent devices SUSPECT / OFFLINE | Suspect after 60 s, offline after 240 s more; no retries |
 | **DynamoDB** `snapshots` | Full history per device | PK `deviceId`, SK `timestamp`, TTL `expiresAt` |
 | **DynamoDB** `latest` | Newest snapshot per device | PK `deviceId` |
 | **DynamoDB** `alerts` | Last-call, status and presence events | PK `deviceId`, SK `<timestamp>#<alertType>`, TTL `expiresAt` |
 | **S3 + CloudFront** | Hosts the dashboard at `/dashboard/` | Private bucket (origin access control); `/` redirects to `/dashboard/` |
 
-All Lambdas run Python 3.13 on ARM64 with 256 MB, share one code package (`src/backend`),
-and log to `/aws/lambda/<function>` (kept one week). Tables are on-demand, capped at
+All Lambdas run Python 3.13 on ARM64 with 256 MB and log to `/aws/lambda/<function>` (kept one
+week). Tables are on-demand, capped at
 100 read/write units per second each.
+
+### Lambda code layout
+
+```text
+src/backend/
+├── functions/                one self-contained folder per Lambda (no shared package)
+│   ├── ingest/               handler.py, checks.py, contract_a.py
+│   ├── processor/            handler.py, snapshot.py, checks.py, contract_a.py, dynamo.py, travel.py
+│   ├── query/                handler.py
+│   ├── battery/              handler.py, validation.py, checks.py, dynamo.py, travel.py, events.py, event_body.py
+│   ├── connectivity/         handler.py, validation.py, checks.py, dynamo.py, travel.py, events.py, event_body.py
+│   └── presence/             handler.py, rules.py, checks.py, dynamo.py
+├── tests/                    unittest / pytest, run from src/backend (includes test_copies.py)
+└── requirements.txt          runtime deps (boto3 is in the Lambda runtime, nothing is bundled)
+```
+
+Every function folder bundles **all** the code that function runs, and is packaged on its own
+(CDK asset in `telemetry-functions.ts`, and the same zip in the Lambda code jobs). The handler
+setting is `functions.<name>.handler.handler`; modules import each other with
+`from .<module> import ...`.
+
+Function-specific modules:
+
+| Module | Function | Contains |
+|---|---|---|
+| `snapshot.py` | processor | health snapshot rules (activity, drain rate, alert status) |
+| `validation.py` | battery | Contracts D1, D2 + battery thresholds |
+| `validation.py` | connectivity | Contracts E1, E2 + signal thresholds |
+| `rules.py` | presence | Contract F presence rules and timers |
+
+Helper modules that several functions need are **copied** into each of them:
+
+| Helper module | Contains | Copied into |
+|---|---|---|
+| `checks.py` | basic checks: ValidationError, numbers, timestamps, location, heading | ingest, processor, battery, connectivity, presence |
+| `contract_a.py` | Contract A batch validation | ingest, processor |
+| `travel.py` | normalize_timestamp, derive_travel_status | processor, battery, connectivity |
+| `dynamo.py` | to_dynamo, conditional-write check, alert TTL | processor, presence, battery, connectivity |
+| `events.py` | event flow: parse, validate, store, 202 | battery, connectivity |
+| `event_body.py` | body checks common to the event contracts | battery, connectivity |
+
+**The copies must stay identical.** `tests/test_copies.py` fails when two copies of a helper
+differ, or when a copy exists that is not listed in it. To change a helper, edit one copy, copy
+the file over the others, and deploy each function that carries it. Each copy has its own
+`ValidationError` class, so a test must catch the one of the function it calls.
+
+To add a function: create `functions/<name>/__init__.py` and `functions/<name>/handler.py` with
+`def handler(event, context)`, add `<name>` to `FUNCTION_NAMES` in `lib/naming.ts`, create it in
+`telemetry-functions.ts`, and add a `lambda-<name>` job (and environment) to `infra-deploy.yml`.
 
 ### API routes
 
@@ -145,7 +195,7 @@ IAM stack:
 |---|---|---|---|
 | `WebStack` | `fleet-telemetry-web` | S3 bucket, CloudFront, routing function, SSM parameter with the site origin | `lib/stacks/web-stack.ts` |
 | `DataStack` | `fleet-telemetry-data` | 3 DynamoDB tables, SQS queue + DLQ, DLQ alarm | `lib/stacks/data-stack.ts` |
-| `LambdaStack` | `fleet-telemetry-lambdas` | 5 Lambda functions, their roles, log groups, SQS trigger | `lib/stacks/lambda-stack.ts` |
+| `LambdaStack` | `fleet-telemetry-lambdas` | 6 Lambda functions, their roles, log groups, SQS trigger, presence schedule | `lib/stacks/lambda-stack.ts` |
 | `ApiStack` | `fleet-telemetry-api` | REST API, routes, invoke permissions, API key, usage plan | `lib/stacks/api-stack.ts` |
 | `GithubDeployRoleStack` | `fleet-telemetry-github-deploy` | OIDC provider + IAM role used by GitHub Actions | `lib/github-deploy-role-stack.ts` |
 
@@ -203,7 +253,7 @@ with `cdk deploy --exclusively <StackId>`.
 | `lib/constructs/telemetry-tables.ts`, `telemetry-queue.ts`, `lib/stacks/data-stack.ts` | DataStack | Renaming a table/queue also needs LambdaStack |
 | `lib/constructs/telemetry-functions.ts`, `lib/stacks/lambda-stack.ts` | LambdaStack | Settings, env vars, permissions, code |
 | `lib/constructs/telemetry-api.ts`, `lib/stacks/api-stack.ts` | ApiStack | |
-| `src/backend/**` only | nothing in CDK | Lambda deploy workflow updates the code |
+| `src/backend/functions/<name>/**` | lambdas (that function's package) | Approve that Lambda job, or the lambdas stack job |
 | `lib/naming.ts`, `bin/app.ts`, `cdk.json`, `package*.json` | all four | |
 
 ### Deploy role permissions
@@ -220,7 +270,7 @@ It is trusted only for pushes to `main` of this repository. The new stack names 
 existing `fleet-telemetry-*` patterns, so the role did not need to change for the split.
 
 To change these permissions, edit `lib/github-deploy-role-stack.ts` and run the
-**Deploy role update** workflow (section 3). Because CloudFormation runs through the CDK
+**Infra / Deploy role** workflow (section 3). Because CloudFormation runs through the CDK
 bootstrap roles, the deploy role can update its own stack, but only while GitHub can still log
 in to it.
 
@@ -228,14 +278,35 @@ in to it.
 
 ## 3. GitHub Actions workflows
 
+GitHub only runs workflow files placed directly in `.github/workflows/` (subfolders are
+ignored), so the structure comes from a name prefix per area plus shared steps in their own
+folder:
+
+```text
+.github/
+├── workflows/
+│   ├── infra-bootstrap.yml        Infra / Bootstrap (one-time)
+│   ├── infra-deploy-role.yml      Infra / Deploy role
+│   ├── infra-deploy.yml           Infra / Deploy stacks and Lambdas   (one manual job per stack and per Lambda)
+│   ├── infra-deploy-stack.yml     reusable: cdk deploy of one stack
+│   ├── infra-deploy-lambda.yml    reusable: code update of one Lambda
+│   ├── web-dashboard-deploy.yml   Web / Dashboard deploy
+│   └── mobile-apk-build.yml       Mobile / APK build
+└── actions/                       shared steps (composite actions)
+    ├── setup-cdk/                 Node + npm ci in infrastructure/ (cached)
+    └── aws-login/                 checks AWS_DEPLOY_ROLE_ARN, then assumes the deploy role (OIDC)
+```
+
+The display names start with the same area (`Infra /`, `Web /`, `Mobile /`), so the Actions
+sidebar lists them grouped.
+
 | Workflow | File | Runs on | Does |
 |---|---|---|---|
-| AWS bootstrap | `aws-bootstrap.yml` | manual, once per account | `cdk bootstrap` + creates the deploy role |
-| Deploy role update | `deploy-role-update.yml` | manual, from `main` | diff, approval, then updates the deploy role's permissions |
-| Infrastructure deploy | `infra-deploy.yml` | `infrastructure/**` | type-check, synth; on `main`: deploys the four stacks |
-| Lambda deploy | `lambda-deploy.yml` | `src/backend/**` | compile + tests; on `main`: updates the code of all functions |
-| Frontend deploy | `frontend-deploy.yml` | `src/web-dashboard/**` | builds the dashboard; on `main`: uploads to S3 + invalidates CloudFront |
-| Mobile APK | `mobile-apk.yml` | `src/mobile-app/**` | analyze + debug build; on `main`: release APK as an artifact |
+| Infra / Bootstrap (one-time) | `infra-bootstrap.yml` | manual, once per account | `cdk bootstrap` + creates the deploy role |
+| Infra / Deploy role | `infra-deploy-role.yml` | manual, from `main` | diff, approval, then updates the deploy role's permissions |
+| Infra / Deploy stacks and Lambdas | `infra-deploy.yml` | `infrastructure/**`, `src/backend/**` | checks; on `main`: diff per stack + affected Lambdas, then one approval-gated job per stack and per Lambda |
+| Web / Dashboard deploy | `web-dashboard-deploy.yml` | `src/web-dashboard/**` | builds the dashboard; on `main`: uploads to S3 + invalidates CloudFront |
+| Mobile / APK build | `mobile-apk-build.yml` | `src/mobile-app/**` | analyze + debug build; on `main`: release APK as an artifact |
 
 Every workflow except the two manual ones also runs on pull requests (checks only, nothing is
 deployed), and all of them can be started by hand from **Actions → (workflow) → Run workflow**.
@@ -248,66 +319,118 @@ flowchart TB
     push --> pathcheck{"changed paths"}
     pr --> pathcheck
 
-    pathcheck -- "infrastructure/**" --> infra["Infrastructure deploy"]
-    pathcheck -- "src/backend/**" --> lambda["Lambda deploy"]
-    pathcheck -- "src/web-dashboard/**" --> front["Frontend deploy"]
-    pathcheck -- "src/mobile-app/**" --> apk["Mobile APK"]
+    pathcheck -- "infrastructure/** or src/backend/**" --> infra["Infra / Deploy stacks and Lambdas"]
+    pathcheck -- "src/web-dashboard/**" --> front["Web / Dashboard deploy"]
+    pathcheck -- "src/mobile-app/**" --> apk["Mobile / APK build"]
 
-    infra --> i1["check: tsc + cdk synth"] --> i2{"main?"} -- yes --> i3["cdk deploy WebStack DataStack<br/>LambdaStack ApiStack"]
-    lambda --> l1["check: compileall + pytest"] --> l2{"main?"} -- yes --> l3["update-function-code<br/>× 5 functions"]
+    infra --> i1["checks: tsc + synth, compile + pytest"] --> i2{"main?"} -- yes --> i3["plan: cdk diff per stack + affected Lambdas<br/>then one gated job per stack and per Lambda"]
     front --> f1["build (check)"] --> f2{"main?"} -- yes --> f3["read web + api outputs<br/>build, s3 sync, invalidate"]
     apk --> a1{"PR?"} -- yes --> a2["analyze + debug APK"]
     a1 -- "no (main)" --> a3["release APK<br/>(INGESTION_URL var + key secret)"] --> a4["artifact fleet-telemetry-apk<br/>(3 days)"]
 ```
 
-### Infrastructure deploy
+### Infra / Deploy stacks and Lambdas
 
-1. **Type-check and synth** – `npm ci`, `tsc --noEmit`, `cdk synth --quiet`. Runs on every PR.
-2. **Deploy to AWS** (only `main`) – assumes the deploy role and runs
-   `cdk deploy WebStack DataStack LambdaStack ApiStack`. CDK deploys them in dependency order and
-   skips stacks whose template did not change. All outputs go to the run summary.
+Every backend deploy in one workflow: each stack and each Lambda's code is its own job that
+waits for manual approval, like manual jobs in a GitLab pipeline.
 
-Shares the concurrency group `aws-backend-deploy` with Lambda deploy, so the two never run at the
-same time.
+```mermaid
+flowchart LR
+    ci["check-infra<br/>tsc + synth"] --> plan
+    cb["check-backend<br/>compile + pytest"] --> plan
+    plan["plan<br/>cdk diff per stack<br/>+ affected Lambdas"]
+    plan --> web{{"stack web"}}
+    plan --> data{{"stack data"}}
+    data --> lstack{{"stack lambdas"}}
+    web --> lstack
+    lstack --> api{{"stack api"}}
+    web --> api
+    lstack -. "waits, any result" .-> fns{{"Lambda ingest · processor · presence ·<br/>query · battery · connectivity"}}
+    plan --> fns
+```
 
-### Lambda deploy
+1. **Checks** – `tsc --noEmit` + `cdk synth`, and for the Lambdas `compileall` + `pytest`
+   (including the copy check). Pull requests stop here.
+2. **Plan** (only `main`) – runs `cdk diff --exclusively` for each stack (each diff is in the run
+   summary, collapsed under the stack's name) and works out which Lambdas to offer. The summary
+   ends with the list of offered jobs.
+3. **Stack jobs** – `infra-deploy-stack.yml` runs `cdk deploy <Stack> --exclusively` in the
+   environment `stack-<name>`.
+4. **Lambda jobs** – `infra-deploy-lambda.yml` zips `functions/<name>/` (the same package CDK
+   builds), checks the function exists and is configured for that layout
+   (handler `functions.<name>.handler.handler`), runs `update-function-code` for that one function
+   and waits until it is active, in the environment `lambda-<name>`. No CloudFormation run, so it
+   takes seconds.
 
-1. **Check Python code** – `python -m compileall handlers` and `pytest tests`.
-2. **Deploy Lambda code** (only `main`) – zips `src/backend/handlers` and calls
-   `aws lambda update-function-code` for every function, then waits until each one is updated.
-   No CloudFormation run, so it takes seconds.
+Open the run, click **Review deployments**, tick the jobs you want and **Approve and deploy**;
+reject the others. With required reviewers on the environments (section 4), nothing deploys
+without that click.
 
-> **Known limitation (fixed in the next step):** if one merge changes both `infrastructure/**`
-> and `src/backend/**`, both workflows start together and the shared concurrency group only
-> stops them from overlapping, not from running in the wrong order. When a merge **adds** a
-> function, Lambda deploy can run first and fail because the function does not exist yet.
-> Re-run Lambda deploy after Infrastructure deploy has finished.
+**Order.**
+- Stacks: web and data first (in parallel), lambdas after data and web, api after lambdas and
+  web. A stack job starts only after the stacks it depends on were deployed or had nothing to
+  deploy; rejecting or failing a stack skips the stacks after it.
+- Lambdas: each waits only for the **lambdas stack** job to finish, whatever its result. Approve
+  that job to update every function through CloudFormation; reject it to deploy just the Lambdas
+  you approve. Waiting for it guarantees that a newly added function exists before its code is
+  updated.
 
-### Frontend deploy
+**Which Lambdas are offered.** On a merge, the ones whose folder changed (paths relative to
+`src/backend`):
+
+| Changed file | Lambdas offered |
+|---|---|
+| `functions/<name>/**` | that function |
+| `functions/__init__.py` | all |
+| `tests/**`, `requirements*.txt`, anything else | none |
+
+A change to a helper copied into several folders (e.g. all `dynamo.py` copies) offers each of
+those functions. A Lambda is any `functions/<name>/handler.py`; `<name>` must match the function
+name in `lib/naming.ts` (`FUNCTION_NAMES`).
+
+The **lambdas stack** diff follows the same packages: a change in `functions/battery/` changes only
+the battery function in CloudFormation. You can reject the stack job and approve only the Lambda
+jobs.
+
+**Manual runs** (**Run workflow** on `main`):
+
+| Stacks | Lambda code | Result |
+|---|---|---|
+| `changed` (default) | `none` (default) | Like a merge without Lambda jobs: only stacks with differences |
+| `none` | `battery` | Only the battery code job; no stack is touched, no AWS diff runs |
+| `none` | `all` | One job per function; approve any of them |
+| `api` | `none` | Only the api stack, even if other stacks have differences |
+| `all` | `none` | Every stack, even without differences (e.g. to recreate one deleted by hand) |
+
+**Concurrency.** Two runs never deploy the same stack (group `infra-stack-<Stack>`) or the same
+function (group `aws-lambda-<name>`) at once; a newer waiting run replaces an older waiting one.
+The lambdas stack job uses `aws-backend-deploy`, shared with Infra / Deploy role.
+
+### Web / Dashboard deploy
 
 Reads `SiteBucketName`, `DistributionId` and `DashboardUrl` from **fleet-telemetry-web** and
 `ApiBaseUrl` from **fleet-telemetry-api**, builds the dashboard with
 `VITE_API_BASE_URL=<ApiBaseUrl>`, syncs `dist/` to `s3://<bucket>/dashboard/` and invalidates
 `/dashboard/*`. The dashboard URL is printed in the run summary.
 
-### Mobile APK
+### Mobile / APK build
 
 Builds `src/mobile-app/tele`. On `main` it needs the repository variable `INGESTION_URL` and the
 secret `INGESTION_API_KEY`; it does **not** set `DEVICE_ID`, so each phone generates its own.
 Download the APK from the run's **Artifacts** section (kept 3 days).
 
-### AWS bootstrap (one-time)
+### Infra / Bootstrap (one-time)
 
 Uses a temporary admin access key (`AWS_BOOTSTRAP_*` secrets) to run `cdk bootstrap` and deploy
 `GithubDeployRoleStack`. Afterwards save `DeployRoleArn` as `AWS_DEPLOY_ROLE_ARN` and delete
 the temporary key. See section 5.
 
-### Deploy role update
+### Infra / Deploy role
 
 Changes the deploy role's own permissions using the deploy role itself, so no admin key is
 needed. Use it when a workflow needs a new AWS permission: edit
 `infrastructure/lib/github-deploy-role-stack.ts`, merge to `main`, then run it from
-**Actions → Deploy role update → Run workflow** (branch `main`; the role only trusts `main`).
+**Actions → Infra / Deploy role → Run workflow** (branch `main`; the role only trusts `main`).
 
 ```mermaid
 flowchart LR
@@ -326,12 +449,12 @@ flowchart LR
 2. **Deploy (needs approval)** – runs in the GitHub environment `deploy-role`. With required
    reviewers set (section 4), the run pauses until someone clicks **Review deployments →
    Approve** after reading the diff. Shares the `aws-backend-deploy` concurrency group, so it
-   never runs next to a stack deploy.
+   never runs next to the lambdas stack deploy.
 3. **Check the role still works** – requests a fresh token and logs in again. If that fails, the
    change broke the trust policy and the summary says how to repair it.
 
 **Limits:** it cannot repair a role GitHub can no longer log in to; that needs an admin (IAM
-console → Roles → `fleet-telemetry-github-deploy` → Trust relationships, or the AWS bootstrap
+console → Roles → `fleet-telemetry-github-deploy` → Trust relationships, or the Infra / Bootstrap
 workflow). Be especially careful with changes to `githubRepo`, `githubImmutableSubjectPrefix` or
 the trust conditions.
 
@@ -357,31 +480,32 @@ the trust conditions.
 |---|---|---|---|
 | `AWS_DEPLOY_ROLE_ARN` | secret | all deploy jobs | Output `DeployRoleArn` of the bootstrap workflow |
 | `AWS_REGION` | variable (optional) | all AWS workflows | Defaults to `eu-west-1` |
-| `INGESTION_URL` | variable | Mobile APK | `<ApiBaseUrl>/api/telemetry` |
-| `INGESTION_API_KEY` | secret | Mobile APK | API key value (see 5.4) |
-| `AWS_BOOTSTRAP_ACCESS_KEY_ID`, `AWS_BOOTSTRAP_SECRET_ACCESS_KEY` | secret | AWS bootstrap | Temporary admin key; delete after bootstrapping |
+| `INGESTION_URL` | variable | Mobile / APK build | `<ApiBaseUrl>/api/telemetry` |
+| `INGESTION_API_KEY` | secret | Mobile / APK build | API key value (see 5.4) |
+| `AWS_BOOTSTRAP_ACCESS_KEY_ID`, `AWS_BOOTSTRAP_SECRET_ACCESS_KEY` | secret | Infra / Bootstrap | Temporary admin key; delete after bootstrapping |
 
 ### GitHub environments (Settings → Environments)
 
 | Environment | Used by | Set up |
 |---|---|---|
-| `deploy-role` | Deploy role update (deploy job) | **Required reviewers**: add yourself. Without them GitHub creates the environment on the first run with no protection, and the deploy does not wait for approval. Optionally restrict **Deployment branches** to `main`. |
+| `deploy-role` | Infra / Deploy role (deploy job) | **Required reviewers**: add yourself. Without them GitHub creates the environment on the first run with no protection, and the deploy does not wait for approval. Optionally restrict **Deployment branches** to `main`. |
+| `stack-web`, `stack-data`, `stack-lambdas`, `stack-api`, `lambda-ingest`, `lambda-processor`, `lambda-query`, `lambda-battery`, `lambda-connectivity` | Infra / Deploy stacks and Lambdas (one per job) | **Required reviewers** on each, so every job waits for approval. Same warning: an environment without reviewers is created unprotected on the first run and that job deploys without waiting. Optionally restrict **Deployment branches** to `main`. |
 
 ### Stack outputs
 
 | Stack | Output | Used for |
 |---|---|---|
 | web | `DashboardUrl` | Open the dashboard |
-| web | `SiteBucketName`, `DistributionId` | Frontend deploy |
+| web | `SiteBucketName`, `DistributionId` | Web / Dashboard deploy |
 | web | `SiteOrigin` | Same value as the SSM parameter |
 | data | `SnapshotsTableName`, `LatestTableName`, `AlertsTableName` | Debugging in the console |
 | data | `EventsQueueUrl`, `EventsDeadLetterQueueUrl` | Inspecting / redriving messages |
-| lambdas | `FunctionNames` | The functions Lambda deploy updates |
+| lambdas | `FunctionNames` | The functions the Lambda jobs update |
 | api | `ApiBaseUrl` | Dashboard build, `INGESTION_URL` |
 | api | `AllowedOrigin` | Check the CORS origin in effect |
 | api | `IngestionApiKeyId`, `GetIngestionApiKeyCommand` | Retrieve the API key |
 
-The outputs of the latest **Infrastructure deploy** run are in its summary, or in the
+The outputs of the latest **Infra / Deploy stacks and Lambdas** run (one block per deployed stack) are in its summary, or in the
 CloudFormation console → stack → **Outputs**.
 
 ---
@@ -399,17 +523,17 @@ sequenceDiagram
 
     You->>AWS: create a temporary admin access key (IAM)
     You->>GH: add AWS_BOOTSTRAP_* secrets
-    You->>GH: run "AWS bootstrap"
+    You->>GH: run "Infra / Bootstrap"
     GH->>AWS: cdk bootstrap + deploy GithubDeployRoleStack
     GH-->>You: DeployRoleArn in the run summary
     You->>GH: save secret AWS_DEPLOY_ROLE_ARN
     You->>AWS: delete the temporary key
-    You->>GH: run "Infrastructure deploy" (or merge to main)
+    You->>GH: run "Infra / Deploy stacks and Lambdas" (Stacks = all), approve each stack
     GH->>AWS: deploy web → data → lambdas → api
-    You->>GH: run "Frontend deploy"
+    You->>GH: run "Web / Dashboard deploy"
     You->>AWS: read the API key (5.4)
     You->>GH: set INGESTION_URL var + INGESTION_API_KEY secret
-    You->>GH: run "Mobile APK"
+    You->>GH: run "Mobile / APK build"
 ```
 
 ### 5.2 Everyday changes
@@ -468,10 +592,10 @@ flowchart TB
     a["1. Do NOT merge this branch yet"] --> b["2. CloudFormation console (admin):<br/>delete stack fleet-telemetry-stack"]
     b --> c{"Deleted?<br/>(CloudFront takes ~10-20 min)"}
     c -- "DELETE_FAILED" --> d["Retry delete; check the Events tab<br/>(see Troubleshooting)"] --> b
-    c -- yes --> e["3. Merge to main<br/>→ Infrastructure deploy creates<br/>web → data → lambdas → api"]
-    e --> f["4. Run Lambda deploy and Frontend deploy"]
+    c -- yes --> e["3. Merge to main<br/>→ Infra / Deploy stacks and Lambdas creates<br/>web → data → lambdas → api"]
+    e --> f["4. Run Web / Dashboard deploy"]
     f --> g["5. New API key + ApiBaseUrl:<br/>update INGESTION_URL var and<br/>INGESTION_API_KEY secret"]
-    g --> h["6. Run Mobile APK, reinstall on phones"]
+    g --> h["6. Run Mobile / APK build, reinstall on phones"]
     h --> i["7. Open the new DashboardUrl"]
 ```
 
@@ -479,8 +603,8 @@ Notes:
 
 - Deleting needs an admin login in the console; the GitHub deploy role cannot delete stacks.
 - The S3 bucket is emptied automatically before deletion (auto-delete is on).
-- If Infrastructure deploy ran before the old stack was gone, it fails with
-  `... already exists`. Finish step 2, then re-run Infrastructure deploy.
+- If Infra / Deploy stacks and Lambdas ran before the old stack was gone, it fails with
+  `... already exists`. Finish step 2, then re-run Infra / Deploy stacks and Lambdas.
 - The GitHub deploy role (`fleet-telemetry-github-deploy`) is a separate stack and is **kept**.
 
 ---
@@ -489,14 +613,15 @@ Notes:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Configure AWS credentials` fails | Deploy role trust policy or `AWS_DEPLOY_ROLE_ARN` wrong | Check the secret; fix the trust policy as admin (IAM console or AWS bootstrap) |
-| A workflow gets `AccessDenied` for a new AWS action | The deploy role lacks that permission | Add it in `github-deploy-role-stack.ts`, merge, run **Deploy role update** |
-| Deploy role update: "Show changes" skipped | Started from a branch other than `main` | Run it with branch `main` |
-| Deploy role update deployed without waiting | Environment `deploy-role` has no required reviewers | Add reviewers (section 4) |
+| `Configure AWS credentials` fails | Deploy role trust policy or `AWS_DEPLOY_ROLE_ARN` wrong | Check the secret; fix the trust policy as admin (IAM console or Infra / Bootstrap) |
+| A workflow gets `AccessDenied` for a new AWS action | The deploy role lacks that permission | Add it in `github-deploy-role-stack.ts`, merge, run **Infra / Deploy role** |
+| Infra / Deploy role: "Show changes" skipped | Started from a branch other than `main` | Run it with branch `main` |
+| Infra / Deploy role deployed without waiting | Environment `deploy-role` has no required reviewers | Add reviewers (section 4) |
 | `Resource of type ... with identifier ... already exists` | Old `fleet-telemetry-stack` (or a leftover resource) still exists | Delete it (section 6), re-run the deploy |
 | LambdaStack / ApiStack: `Unable to fetch parameters [/fleet-telemetry/web/origin]` | WebStack not deployed yet | Deploy WebStack first (or deploy all four together) |
 | ApiStack: `Function not found: fleet-telemetry-...` | LambdaStack not deployed yet | Deploy LambdaStack first |
-| Lambda deploy: `ResourceNotFoundException` | Function not created yet | Wait for Infrastructure deploy, then re-run Lambda deploy |
+| Lambda job: "does not exist yet" | Function not created yet | Approve the lambdas stack job, or run with Stacks = lambdas, then deploy the code |
+| Lambda job: "runs handler 'handlers.<name>.handler'" | Function still configured for the old single-package layout | Deploy the lambdas stack once (it sets the new handler and code together); later code jobs work |
 | Dashboard: CORS errors after WebStack was recreated | Lambda/API still have the old origin | Redeploy LambdaStack and ApiStack |
 | Phone gets 401 | Wrong or old key in the APK | Update `INGESTION_API_KEY`, rebuild the APK |
 | Phone gets 429 | Throttle or the 20 000/day quota | Increase the send interval or the quota (`telemetry-api.ts`) |

@@ -1,0 +1,89 @@
+name: Infra / Deploy one Lambda (reusable)
+
+# Called by infra-deploy.yml, once per function. Not started by itself.
+# Updates only the code of one existing function (no CloudFormation run). The job runs in the
+# given GitHub environment: with required reviewers set on it, it waits for approval.
+on:
+  workflow_call:
+    inputs:
+      function:
+        description: Function short name, e.g. battery (deployed as fleet-telemetry-battery)
+        required: true
+        type: string
+      environment:
+        description: GitHub environment that gates the deploy, e.g. lambda-battery
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # needed to request the OIDC token for AWS
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+
+jobs:
+  deploy:
+    name: update ${{ inputs.function }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    # One update at a time per function; different functions can deploy in parallel.
+    concurrency:
+      group: aws-lambda-${{ inputs.function }}
+      cancel-in-progress: false
+    env:
+      FUNCTION: ${{ inputs.function }}
+      FUNCTION_NAME: fleet-telemetry-${{ inputs.function }}
+      # Must match the handler set by CDK in infrastructure/lib/constructs/telemetry-functions.ts.
+      EXPECTED_HANDLER: functions.${{ inputs.function }}.handler.handler
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Package code
+        working-directory: src/backend
+        # Same layout as the CDK asset (telemetry-functions.ts): only this function's folder,
+        # which bundles every module the function needs.
+        run: |
+          if [ ! -f "functions/$FUNCTION/handler.py" ]; then
+            echo "::error::src/backend/functions/$FUNCTION/handler.py not found."
+            exit 1
+          fi
+          zip -qr "$RUNNER_TEMP/backend.zip" functions/__init__.py "functions/$FUNCTION" -x '*__pycache__*' '*.pyc'
+          unzip -l "$RUNNER_TEMP/backend.zip"
+
+      - name: AWS login
+        uses: ./.github/actions/aws-login
+        with:
+          role-arn: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
+
+      - name: Check the function exists and expects this layout
+        run: |
+          if ! handler=$(aws lambda get-function-configuration --function-name "$FUNCTION_NAME" --query Handler --output text 2>&1); then
+            if echo "$handler" | grep -q ResourceNotFoundException; then
+              echo "::error::$FUNCTION_NAME does not exist yet. Approve the lambdas stack job (or run the workflow with Stacks = lambdas) to create it, then deploy its code."
+            else
+              echo "::error::Could not read $FUNCTION_NAME: $handler"
+            fi
+            exit 1
+          fi
+          # A code-only update cannot change the handler setting; uploading the new layout to a
+          # function still configured for the old one would break it.
+          if [ "$handler" != "$EXPECTED_HANDLER" ]; then
+            echo "::error::$FUNCTION_NAME runs handler '$handler', this code needs '$EXPECTED_HANDLER'. Deploy the lambdas stack first (it updates the handler and the code together)."
+            exit 1
+          fi
+
+      - name: Update code
+        run: |
+          aws lambda update-function-code --function-name "$FUNCTION_NAME" \
+            --zip-file "fileb://$RUNNER_TEMP/backend.zip" --query LastUpdateStatus --output text
+          aws lambda wait function-updated-v2 --function-name "$FUNCTION_NAME"
+          read -r sha modified < <(aws lambda get-function-configuration --function-name "$FUNCTION_NAME" \
+            --query '[CodeSha256, LastModified]' --output text)
+          {
+            echo "## ✅ $FUNCTION_NAME updated"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- CodeSha256: \`$sha\`"
+            echo "- LastModified: $modified"
+          } >> "$GITHUB_STEP_SUMMARY"

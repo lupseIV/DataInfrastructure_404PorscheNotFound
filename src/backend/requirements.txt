@@ -1,2 +1,2 @@
-# Runtime dependencies for the Lambda handlers.
+# Runtime dependencies of the Lambda functions.
 # boto3 is already included in the AWS Lambda Python runtime, so it is not bundled.

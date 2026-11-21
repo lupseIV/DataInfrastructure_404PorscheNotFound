@@ -1,6 +1,6 @@
-name: AWS bootstrap (one-time)
+name: Infra / Bootstrap (one-time)
 
-# Run once per AWS account, by hand (Actions -> AWS bootstrap -> Run workflow).
+# Run once per AWS account, by hand (Actions -> Infra / Bootstrap (one-time) -> Run workflow).
 # Uses a temporary admin access key because the OIDC deploy role doesn't exist yet:
 #   1. `cdk bootstrap` (CDK's S3 bucket, ECR repo and deploy roles)
 #   2. deploys GithubDeployRoleStack (the role all other workflows use)
@@ -69,5 +69,5 @@ jobs:
             echo "## Deploy role created"
             echo "1. Save this as repository secret \`AWS_DEPLOY_ROLE_ARN\`: \`$role\`"
             echo "2. Delete the bootstrap access key in IAM and the \`AWS_BOOTSTRAP_*\` secrets in GitHub"
-            echo "3. Run **Infrastructure deploy**, then **Lambda deploy** / **Frontend deploy**"
+            echo "3. Run **Infra / Deploy stacks and Lambdas** (Stacks = all), then **Web / Dashboard deploy**"
           } >> "$GITHUB_STEP_SUMMARY"

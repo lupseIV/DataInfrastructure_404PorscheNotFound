@@ -6,7 +6,10 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from handlers import ingest, rules, validation  # noqa: E402
+from functions.ingest import handler as ingest  # noqa: E402
+from functions.processor import snapshot  # noqa: E402
+from functions.ingest import checks as validation, contract_a  # noqa: E402
+from functions.processor import travel  # noqa: E402
 
 TS = "2026-11-20T18:30:00Z"
 
@@ -26,10 +29,10 @@ def batch(level=0.785, charging=False, accel=None, ts=TS):
 class ValidationTests(unittest.TestCase):
     def bad(self, events):
         with self.assertRaises(validation.ValidationError):
-            validation.validate_events(events)
+            contract_a.validate_events(events)
 
     def test_valid_batch(self):
-        validation.validate_events(batch())
+        contract_a.validate_events(batch())
 
     def test_rejects(self):
         self.bad([])
@@ -44,12 +47,12 @@ class ValidationTests(unittest.TestCase):
         self.bad([ev("gps", 1, "x")])
 
     def test_mobile_timestamp_format(self):
-        validation.validate_events([ev("battery_level", 0.5, "ratio", "2026-11-20T18:30:00Z")])
+        contract_a.validate_events([ev("battery_level", 0.5, "ratio", "2026-11-20T18:30:00Z")])
 
 
 class RulesTests(unittest.TestCase):
     def test_first_snapshot_matches_contract_example(self):
-        s = rules.build_snapshot("fleet-phone-01", TS, batch(), None)
+        s = snapshot.build_snapshot("fleet-phone-01", TS, batch(), None)
         self.assertEqual(s["batteryLevel"], 78.5)
         self.assertEqual(s["activityState"], "in_vehicle")
         self.assertEqual(s["drainRatePerHour"], 0.0)
@@ -57,8 +60,8 @@ class RulesTests(unittest.TestCase):
         self.assertEqual(s["alertStatus"], "OK")
 
     def test_drain_and_estimate(self):
-        prev = rules.build_snapshot("d", "2026-11-20T18:00:00Z", batch(level=0.9), None)
-        s = rules.build_snapshot("d", "2026-11-20T19:00:00Z", batch(level=0.8)[:2], prev)
+        prev = snapshot.build_snapshot("d", "2026-11-20T18:00:00Z", batch(level=0.9), None)
+        s = snapshot.build_snapshot("d", "2026-11-20T19:00:00Z", batch(level=0.8)[:2], prev)
         self.assertEqual(s["drainRatePerHour"], 10.0)
         self.assertEqual(s["estimatedMinutesRemaining"], 480)
         self.assertEqual(s["activityState"], "in_vehicle")  # retained axes
@@ -66,18 +69,18 @@ class RulesTests(unittest.TestCase):
     def test_short_interval_keeps_previous_drain(self):
         prev = {"batteryLevel": 50.0, "isCharging": False, "drainRatePerHour": 7.0,
                 "timestamp": "2026-11-20T18:00:00Z", "lastAccel": {"x": 0, "y": 0, "z": 9.81}}
-        s = rules.build_snapshot("d", "2026-11-20T18:00:03Z", batch(level=0.49, ts="x")[:1], prev)
+        s = snapshot.build_snapshot("d", "2026-11-20T18:00:03Z", batch(level=0.49, ts="x")[:1], prev)
         self.assertEqual(s["drainRatePerHour"], 7.0)
 
     def test_alert_priority(self):
-        self.assertEqual(rules.evaluate_alert(False, 10, "in_vehicle", 30)[1], "Critical battery level below 20%")
-        self.assertEqual(rules.evaluate_alert(False, 50, "stationary", 30)[0], "CRITICAL")
-        self.assertEqual(rules.evaluate_alert(False, 50, "stationary", 13)[0], "WARNING")
-        self.assertEqual(rules.evaluate_alert(False, 30, "in_vehicle", 1)[0], "WARNING")
-        self.assertEqual(rules.evaluate_alert(True, 5, "stationary", 99), ("OK", None))
+        self.assertEqual(snapshot.evaluate_alert(False, 10, "in_vehicle", 30)[1], "Critical battery level below 20%")
+        self.assertEqual(snapshot.evaluate_alert(False, 50, "stationary", 30)[0], "CRITICAL")
+        self.assertEqual(snapshot.evaluate_alert(False, 50, "stationary", 13)[0], "WARNING")
+        self.assertEqual(snapshot.evaluate_alert(False, 30, "in_vehicle", 1)[0], "WARNING")
+        self.assertEqual(snapshot.evaluate_alert(True, 5, "stationary", 99), ("OK", None))
 
     def test_normalize_timestamp(self):
-        self.assertEqual(rules.normalize_timestamp("2026-11-20T18:30:00.123Z"), TS)
+        self.assertEqual(travel.normalize_timestamp("2026-11-20T18:30:00.123Z"), TS)
 
 
 class IngestTests(unittest.TestCase):

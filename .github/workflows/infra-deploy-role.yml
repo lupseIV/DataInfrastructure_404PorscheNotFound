@@ -1,4 +1,4 @@
-name: Deploy role update
+name: Infra / Deploy role
 
 # Updates GithubDeployRoleStack (the IAM role every other workflow uses) with that same role,
 # e.g. to grant a permission a new workflow needs. Manual only, from main:
@@ -7,7 +7,7 @@ name: Deploy role update
 #   3. verify: logs in again with a fresh token to prove the role still works
 #
 # It cannot repair a role GitHub can no longer log in to (broken trust policy): that needs an
-# admin, in the IAM console or with the "AWS bootstrap" workflow. See docs/infrastructure.md.
+# admin, in the IAM console or with the "Infra / Bootstrap" workflow. See docs/infrastructure.md.
 on:
   workflow_dispatch:
 
@@ -36,19 +36,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v5
+      - uses: ./.github/actions/setup-cdk
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: infrastructure/package-lock.json
 
-      - run: npm ci
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
+      - name: AWS login
+        uses: ./.github/actions/aws-login
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-arn: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
 
       - name: cdk diff
         id: diff
@@ -88,19 +84,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v5
+      - uses: ./.github/actions/setup-cdk
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: infrastructure/package-lock.json
 
-      - run: npm ci
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
+      - name: AWS login
+        uses: ./.github/actions/aws-login
         with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-arn: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          region: ${{ env.AWS_REGION }}
 
       - name: Deploy GithubDeployRoleStack
         run: npx cdk deploy "$STACK_ID" --exclusively --require-approval never
@@ -129,7 +121,7 @@ jobs:
             {
               echo "## ❌ The deploy role no longer accepts GitHub's token"
               echo "Fix the trust policy as an admin (IAM console -> Roles -> fleet-telemetry-github-deploy"
-              echo "-> Trust relationships), or run **AWS bootstrap** with a temporary admin key."
+              echo "-> Trust relationships), or run **Infra / Bootstrap** with a temporary admin key."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
