@@ -2,11 +2,14 @@
 // Timestamps are generated relative to "now" on every call, so the
 // Online / Stale badge behaves like it will with the real API.
 //
-// The four devices cover every state the UI must show:
-//   fleet-phone-01  OK        walking,     on battery
-//   fleet-phone-02  WARNING   in vehicle,  unplugged below 40%
-//   fleet-phone-03  CRITICAL  stationary,  below 20% (history shows the idle-drain WARNING before it)
-//   fleet-phone-04  OK        charging,    but Stale (no data for 5 minutes)
+// The 12 devices cover every battery group and every alert the UI must show:
+//   critical  fleet-phone-03 (CRITICAL, history shows the idle-drain WARNING before it), fleet-phone-06
+//   low       fleet-phone-02 (WARNING: unplugged in vehicle), fleet-phone-09
+//   medium    fleet-phone-05, fleet-phone-08, fleet-phone-10 (WARNING: idle drain)
+//   high      fleet-phone-01, fleet-phone-04, fleet-phone-11
+//   charging  fleet-phone-07
+//   offline   fleet-phone-12 (no data for 5 minutes)
+// No coordinates are sent, like the real backend, so the map uses approximate positions.
 
 import type {
   ActivityState,
@@ -28,9 +31,17 @@ interface MockProfile {
 
 const PROFILES: MockProfile[] = [
   { deviceId: "fleet-phone-01", secondsSinceUpdate: 3, batteryLevel: 78.5, isCharging: false, activityState: "walking", drainRatePerHour: 9.4 },
-  { deviceId: "fleet-phone-02", secondsSinceUpdate: 4, batteryLevel: 36.2, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 14.8 },
-  { deviceId: "fleet-phone-03", secondsSinceUpdate: 2, batteryLevel: 17.6, isCharging: false, activityState: "stationary", drainRatePerHour: 21.3 },
-  { deviceId: "fleet-phone-04", secondsSinceUpdate: 300, batteryLevel: 64.0, isCharging: true, activityState: "stationary", drainRatePerHour: 0 },
+  { deviceId: "fleet-phone-02", secondsSinceUpdate: 4, batteryLevel: 34.0, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 14.8 },
+  { deviceId: "fleet-phone-03", secondsSinceUpdate: 2, batteryLevel: 16.5, isCharging: false, activityState: "stationary", drainRatePerHour: 21.3 },
+  { deviceId: "fleet-phone-04", secondsSinceUpdate: 5, batteryLevel: 92.0, isCharging: false, activityState: "stationary", drainRatePerHour: 4.1 },
+  { deviceId: "fleet-phone-05", secondsSinceUpdate: 1, batteryLevel: 58.0, isCharging: false, activityState: "walking", drainRatePerHour: 8.2 },
+  { deviceId: "fleet-phone-06", secondsSinceUpdate: 6, batteryLevel: 14.2, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 11.0 },
+  { deviceId: "fleet-phone-07", secondsSinceUpdate: 2, batteryLevel: 88.0, isCharging: true, activityState: "stationary", drainRatePerHour: 0 },
+  { deviceId: "fleet-phone-08", secondsSinceUpdate: 7, batteryLevel: 64.5, isCharging: false, activityState: "in_vehicle", drainRatePerHour: 7.5 },
+  { deviceId: "fleet-phone-09", secondsSinceUpdate: 3, batteryLevel: 29.5, isCharging: false, activityState: "walking", drainRatePerHour: 10.2 },
+  { deviceId: "fleet-phone-10", secondsSinceUpdate: 4, batteryLevel: 48.0, isCharging: false, activityState: "stationary", drainRatePerHour: 13.4 },
+  { deviceId: "fleet-phone-11", secondsSinceUpdate: 8, batteryLevel: 74.0, isCharging: false, activityState: "walking", drainRatePerHour: 6.8 },
+  { deviceId: "fleet-phone-12", secondsSinceUpdate: 300, batteryLevel: 42.0, isCharging: false, activityState: "stationary", drainRatePerHour: 5.0 },
 ];
 
 const SAMPLE_INTERVAL_SECONDS = 10; // the phone sends a batch every 10 s

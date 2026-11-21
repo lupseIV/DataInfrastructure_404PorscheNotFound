@@ -19,6 +19,10 @@ export interface HealthSnapshot {
 export interface Device extends HealthSnapshot {
   deviceId: string;
   lastUpdated: string; // ISO-8601 UTC
+  // Not in Contract C yet. If the backend adds them, the map uses the real
+  // position; otherwise it places the device approximately (see lib/location.ts).
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 /** One record of GET /api/devices/{deviceId}/telemetry. */
