@@ -1,0 +1,73 @@
+name: AWS bootstrap (one-time)
+
+# Run once per AWS account, by hand (Actions -> AWS bootstrap -> Run workflow).
+# Uses a temporary admin access key because the OIDC deploy role doesn't exist yet:
+#   1. `cdk bootstrap` (CDK's S3 bucket, ECR repo and deploy roles)
+#   2. deploys GithubDeployRoleStack (the role all other workflows use)
+# Afterwards save DeployRoleArn as secret AWS_DEPLOY_ROLE_ARN, then delete the access key
+# in IAM and the two AWS_BOOTSTRAP_* secrets in GitHub.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'eu-west-1' }}
+  NODE_VERSION: '22'
+
+jobs:
+  bootstrap:
+    name: Bootstrap CDK and create the deploy role
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infrastructure
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: infrastructure/package-lock.json
+
+      - run: npm ci
+
+      - name: Configure AWS credentials (temporary admin key)
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-access-key-id: ${{ secrets.AWS_BOOTSTRAP_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_BOOTSTRAP_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Account checks
+        id: account
+        run: |
+          account=$(aws sts get-caller-identity --query Account --output text)
+          limit=$(aws lambda get-account-settings --query AccountLimit.ConcurrentExecutions --output text)
+          echo "account=$account" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Account checks"
+            echo "- Account: \`$account\`, region \`$AWS_REGION\`"
+            echo "- Lambda concurrency limit: **$limit**"
+            if [ "$limit" -lt 100 ]; then
+              echo "  - ⚠️ Low limit: set \`\"lambdaReservedConcurrency\": 0\` in \`infrastructure/cdk.json\` before deploying TelemetryStack"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: CDK bootstrap
+        run: npx cdk bootstrap "aws://${{ steps.account.outputs.account }}/$AWS_REGION"
+
+      - name: Deploy GithubDeployRoleStack
+        run: npx cdk deploy GithubDeployRoleStack --require-approval never --outputs-file role-outputs.json
+
+      - name: Next steps
+        run: |
+          role=$(node -p "Object.values(require('./role-outputs.json'))[0].DeployRoleArn")
+          {
+            echo "## Deploy role created"
+            echo "1. Save this as repository secret \`AWS_DEPLOY_ROLE_ARN\`: \`$role\`"
+            echo "2. Delete the bootstrap access key in IAM and the \`AWS_BOOTSTRAP_*\` secrets in GitHub"
+            echo "3. Run **Infrastructure deploy**, then **Lambda deploy** / **Frontend deploy**"
+          } >> "$GITHUB_STEP_SUMMARY"
