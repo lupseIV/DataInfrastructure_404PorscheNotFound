@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { getDevices } from "./api";
+import { getDeviceTelemetry, getDevices } from "./api";
+import { DeviceDetailPanel } from "./components/DeviceDetailPanel";
 import { DeviceSidebar, type DeviceRow } from "./components/DeviceSidebar";
 import { FleetMap } from "./components/FleetMap";
 import { Icon } from "./components/Icon";
@@ -42,7 +43,15 @@ export default function App() {
     return q ? filteredRows.filter((r) => r.device.deviceId.toLowerCase().includes(q)) : filteredRows;
   }, [filteredRows, search]);
 
-  const selectedDevice = rows.find((r) => r.device.deviceId === selectedId)?.device ?? null;
+  const selectedRow = rows.find((r) => r.device.deviceId === selectedId) ?? null;
+  const selectedDevice = selectedRow?.device ?? null;
+
+  // History of the open device only; polling stops when the panel closes.
+  const historyPoll = usePolling(
+    (signal) => getDeviceTelemetry(selectedId!, config.historyLimit, signal),
+    config.pollIntervalMs,
+    selectedId,
+  );
 
   const selectDevice = (deviceId: string) => {
     setSelectedId(deviceId);
@@ -102,6 +111,18 @@ export default function App() {
             )}
           </div>
         </main>
+
+        {selectedRow && (
+          <DeviceDetailPanel
+            device={selectedRow.device}
+            group={selectedRow.group}
+            now={now}
+            history={historyPoll.data?.records ?? null}
+            historyLoading={historyPoll.loading}
+            historyError={historyPoll.error}
+            onClose={() => setSelectedId(null)}
+          />
+        )}
       </div>
     </div>
   );
