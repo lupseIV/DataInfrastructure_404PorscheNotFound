@@ -81,4 +81,15 @@ class TelemetryEvent {
         unit: 'deg',
         timestamp: ts,
       );
+
+  /// Raw radio signal: value = { level 0..4, dbm?, networkType }. Contract A.
+  static TelemetryEvent signalStrength(
+          String deviceId, Map<String, Object> value, String ts) =>
+      TelemetryEvent(
+        deviceId: deviceId,
+        eventType: 'signal_strength',
+        value: value,
+        unit: 'bars',
+        timestamp: ts,
+      );
 }

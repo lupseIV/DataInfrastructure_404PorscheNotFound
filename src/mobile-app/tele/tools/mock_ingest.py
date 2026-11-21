@@ -59,6 +59,14 @@ def validate(ev, i):
                 or not is_num(v["degrees"]) or not 0 <= v["degrees"] <= 360
                 or not is_num(v["speedMps"]) or v["speedMps"] < 0 or u != "deg"):
             return f"[{i}] motion_heading needs {{degrees(0..360),speedMps>=0}} and unit 'deg'"
+    elif t == "signal_strength":
+        if (not isinstance(v, dict) or not {"level", "networkType"} <= set(v)
+                or set(v) - {"level", "dbm", "networkType"}
+                or not isinstance(v["level"], int) or isinstance(v["level"], bool)
+                or not 0 <= v["level"] <= 4
+                or ("dbm" in v and not is_num(v["dbm"]))
+                or v["networkType"] not in ("wifi", "cellular", "none") or u != "bars"):
+            return f"[{i}] signal_strength needs {{level(0..4),dbm?,networkType}} and unit 'bars'"
     else:
         return f"[{i}] unknown eventType '{t}'"
     return None
