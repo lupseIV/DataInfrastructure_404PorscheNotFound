@@ -1,0 +1,3 @@
+# Android release signing key: never commit it (see docs/infrastructure.md, 5.5).
+*.jks
+*.keystore

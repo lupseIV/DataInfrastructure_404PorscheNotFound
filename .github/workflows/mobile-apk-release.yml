@@ -1,0 +1,169 @@
+name: Mobile / APK release
+
+# Builds a versioned APK signed with the project's release key, for installing on the phones.
+#
+#   git tag mobile-v1.2.0 && git push origin mobile-v1.2.0
+#
+# - Version: versionName from the tag (1.2.0), versionCode = this workflow's run number, so
+#   every release can be installed over the previous one.
+# - Signing: Flutter's release build is signed with the debug key (android/app/build.gradle.kts);
+#   this workflow re-signs it with the keystore from the ANDROID_KEYSTORE_* secrets, so the app
+#   code is not touched. Without those secrets the run fails instead of shipping a debug build.
+# - Output: workflow artifact only (no GitHub Release). The APK contains the ingestion API key,
+#   and release assets of a public repo would be downloadable by anyone, forever.
+# - Tags must point at a commit on main.
+on:
+  push:
+    tags: ['mobile-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, e.g. 1.2.0 (start the run from a mobile-v* tag or main)'
+        required: true
+      send_interval_seconds:
+        description: 'Seconds between telemetry batches'
+        default: '5'
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: src/mobile-app/tele
+  JAVA_VERSION: '17'
+
+jobs:
+  release:
+    name: Build signed release APK
+    runs-on: ubuntu-latest
+    env:
+      INGESTION_URL: ${{ vars.INGESTION_URL }}
+      INGESTION_API_KEY: ${{ secrets.INGESTION_API_KEY }}
+    defaults:
+      run:
+        working-directory: ${{ env.APP_DIR }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # to check the tagged commit is on main
+
+      - name: Read version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#mobile-v}"
+          else
+            version="$INPUT_VERSION"
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must look like 1.2.0 (tag mobile-v1.2.0), got '$version'."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on main. Tag a commit that is merged to main."
+            exit 1
+          fi
+          echo "name=$version" >> "$GITHUB_OUTPUT"
+          echo "code=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Version $version (versionCode $GITHUB_RUN_NUMBER)"
+
+      - name: Check settings
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=0
+          require() { # require <name> <value> <hint>
+            if [ -z "$2" ]; then echo "::error::$1 is not set ($3)."; missing=1; fi
+          }
+          require 'Repository variable INGESTION_URL' "$INGESTION_URL" '<ApiBaseUrl>/api/telemetry'
+          require 'Repository secret INGESTION_API_KEY' "$INGESTION_API_KEY" 'API Gateway -> API keys -> fleet-telemetry key -> Show'
+          require 'Repository secret ANDROID_KEYSTORE_BASE64' "$KEYSTORE" 'see docs/infrastructure.md, Mobile / APK release'
+          require 'Repository secret ANDROID_KEYSTORE_PASSWORD' "$STORE_PASSWORD" 'keystore password'
+          require 'Repository secret ANDROID_KEY_ALIAS' "$KEY_ALIAS" 'key alias in the keystore'
+          require 'Repository secret ANDROID_KEY_PASSWORD' "$KEY_PASSWORD" 'key password'
+          exit $missing
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Build release APK
+        env:
+          SEND_INTERVAL_SECONDS: ${{ inputs.send_interval_seconds || '5' }}
+          BUILD_NAME: ${{ steps.version.outputs.name }}
+          BUILD_NUMBER: ${{ steps.version.outputs.code }}
+        run: |
+          flutter build apk --release \
+            --build-name="$BUILD_NAME" \
+            --build-number="$BUILD_NUMBER" \
+            --dart-define="INGESTION_URL=$INGESTION_URL" \
+            --dart-define="INGESTION_API_KEY=$INGESTION_API_KEY" \
+            --dart-define="SEND_INTERVAL_SECONDS=$SEND_INTERVAL_SECONDS"
+
+      - name: Sign with the release key
+        id: sign
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          VERSION: ${{ steps.version.outputs.name }}
+        run: |
+          tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          echo "Using $tools"
+          keystore="$RUNNER_TEMP/release.jks"
+          # --ignore-garbage: tolerate line breaks or spaces pasted into the secret.
+          printf '%s' "$KEYSTORE" | base64 --decode --ignore-garbage > "$keystore"
+
+          unsigned=build/app/outputs/flutter-apk/app-release.apk
+          out="$RUNNER_TEMP/fleet-telemetry-$VERSION.apk"
+          "$tools/zipalign" -p -f 4 "$unsigned" "$out"
+          # apksigner replaces the debug signature with the release key's (v1-v3 schemes).
+          "$tools/apksigner" sign \
+            --ks "$keystore" --ks-pass env:STORE_PASSWORD \
+            --ks-key-alias "$KEY_ALIAS" --key-pass env:KEY_PASSWORD \
+            "$out"
+          rm -f "$keystore"
+
+          # Exactly one signer, and it is the release key, not the debug key.
+          certs=$("$tools/apksigner" verify --print-certs "$out")
+          echo "$certs"
+          if [ "$(grep -c '^Signer #[0-9]* certificate DN' <<< "$certs")" != 1 ] || grep -q 'CN=Android Debug' <<< "$certs"; then
+            echo "::error::The APK is not signed only with the release key."
+            exit 1
+          fi
+          echo "sha256=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' <<< "$certs")" >> "$GITHUB_OUTPUT"
+          echo "apk=$out" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fleet-telemetry-${{ steps.version.outputs.name }}
+          path: ${{ steps.sign.outputs.apk }}
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.name }}
+          CODE: ${{ steps.version.outputs.code }}
+          SHA256: ${{ steps.sign.outputs.sha256 }}
+        run: |
+          {
+            echo "## Mobile release $VERSION"
+            echo "- versionName \`$VERSION\`, versionCode \`$CODE\`"
+            echo "- Signed with the release key, certificate SHA-256 \`$SHA256\`"
+            echo "- Sends to: \`$INGESTION_URL\`"
+            echo "- Download **fleet-telemetry-$VERSION** under Artifacts below (kept 7 days)"
+          } >> "$GITHUB_STEP_SUMMARY"

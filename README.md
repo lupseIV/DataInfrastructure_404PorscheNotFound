@@ -47,7 +47,7 @@ DataInfrastructure_404PorscheNotFound/
 1. One-time AWS setup (bootstrap + GitHub deploy role): [docs/infrastructure.md § 5.1](docs/infrastructure.md#51-first-time-setup-of-a-new-aws-account).
 2. Create the GitHub environments with required reviewers ([docs/infrastructure.md § 4](docs/infrastructure.md#github-environments-settings--environments)).
 3. Merge to `main` (or run the workflows by hand). The dashboard deploys automatically; each stack and each Lambda waits for your approval in **Infra / Deploy stacks and Lambdas**.
-4. Set the `INGESTION_URL` variable and `INGESTION_API_KEY` secret, then run **Mobile / APK build** and install the APK on the phones.
+4. Set the `INGESTION_URL` variable and `INGESTION_API_KEY` secret. For the phones, create the release key ([docs/infrastructure.md § 5.5](docs/infrastructure.md#55-creating-the-release-signing-key-once)), then tag `mobile-vX.Y.Z` to run **Mobile / APK release** and install that APK.
 
 Component-specific setup: [src/web-dashboard/README.md](src/web-dashboard/README.md),
 [src/mobile-app/tele/README.md](src/mobile-app/tele/README.md).
