@@ -254,6 +254,64 @@ Returns the stored last-call and status events (Contracts D1 to E2) and presence
 * `batteryLevel` is returned in **percent** (stored as the phone's ratio), so every endpoint uses the same unit. Presence rows have no `batteryLevel`.
 * `limit`: as in #2. A device without alerts returns `{ "deviceId": "...", "records": [] }`.
 
+#### 4. Get Device Path (`GET /api/devices/{deviceId}/path?minutes=10`)
+
+Returns the route the device travelled during the last `minutes` of its data, ready to draw on the map. All selection is done in the cloud (`query` Lambda, reading the history table); the dashboard only draws the returned points. No API key is required (like the other `GET` routes).
+
+```json
+{
+  "deviceId": "fleet-phone-01",
+  "minutes": 10,
+  "from": "2026-11-20T18:20:02Z",
+  "to": "2026-11-20T18:30:02Z",
+  "points": [
+    {
+      "timestamp": "2026-11-20T18:20:05Z",
+      "lat": 48.1374,
+      "lon": 11.5755,
+      "accuracyM": 6.5,
+      "heading": { "degrees": 274.0, "speedMps": 1.4 },
+      "travelStatus": "walking",
+      "signalLevel": 3,
+      "gapBefore": false
+    },
+    {
+      "timestamp": "2026-11-20T18:22:40Z",
+      "lat": 48.1391,
+      "lon": 11.5702,
+      "accuracyM": 8.0,
+      "heading": { "degrees": 280.0, "speedMps": 1.3 },
+      "travelStatus": "walking",
+      "signalLevel": 1,
+      "gapBefore": true
+    }
+  ],
+  "summary": {
+    "pointCount": 2,
+    "distanceM": 0.0,
+    "durationSeconds": 155,
+    "maxSpeedMps": 1.4
+  }
+}
+```
+
+* **`minutes`:** integer from 1 to 120, default `10`. The dashboard offers the presets 5, 10, 20, 30 and 60. A value outside the range or not an integer returns `400 { "error": "minutes must be an integer between 1 and 120" }`.
+* **Window:** `to` is the timestamp of the device's **newest snapshot** (not the server clock), and `from = to - minutes`, both inclusive. A device that went offline therefore still shows the path it took before going silent. Times are device times, as in the history.
+* **Point selection** (snapshots in the window, oldest first, the drawing order):
+  * Only snapshots with a `location` are used.
+  * A point is added only when `location.capturedAt` changes. The processor carries the last fix forward into every snapshot, so without this rule one fix would appear several times.
+  * Fixes with `accuracyM > PATH_MAX_ACCURACY_M` (default 100 m) are dropped.
+  * A fix taken before `from` (carried forward into the first snapshots of the window) is dropped, so every point lies inside the window.
+* **Point fields:** `timestamp` is the fix time (`location.capturedAt`); `lat`, `lon` and `accuracyM` come from the fix; `heading` (`object | null`), `travelStatus` and `signalLevel` (`signal.level`, `integer | null`) come from the snapshot.
+* **`gapBefore`:** `true` when the previous point is more than `PATH_GAP_SECONDS` (default 60 s) older, which means an outage, a lost signal or no GPS. The dashboard starts a new line there instead of drawing a straight line across the gap. Always `false` for the first point.
+* **`summary`:**
+  * `pointCount`: number of `points`.
+  * `distanceM`: sum of the great-circle (haversine) distances between consecutive points, rounded to 0.1 m; distances across a gap are **not** counted.
+  * `durationSeconds`: time from the first to the last point.
+  * `maxSpeedMps`: highest `heading.speedMps` among the points, or `null` when no point has a heading.
+* **Empty results:** a device without snapshots returns `200` with `from` and `to` set to `null`, `points: []` and `summary` `{ "pointCount": 0, "distanceM": 0.0, "durationSeconds": 0, "maxSpeedMps": null }`. A device with snapshots but no usable fix in the window returns the same `points` and `summary` with `from` and `to` set.
+* **Retention:** the history is kept for 7 days (TTL), so the path never reaches further back than that.
+
 ---
 
 ### Contract D1: Battery Low Status (`POST /api/events/battery-low`)
@@ -407,6 +465,7 @@ ONLINE ──silent > SUSPECT_AFTER_SECONDS──► SUSPECT ──silent >= gra
 * `SIGNAL_DROP_BARS=2`, `SIGNAL_DROP_DBM=15`, `SIGNAL_LOST_DBM=-110`, `SIGNAL_DROP_WINDOW_SECONDS=60`
 * `SUSPECT_AFTER_SECONDS=60`, `OFFLINE_GRACE_SECONDS=240`
 * `ALERTS_TABLE` (events table, keyed by `deviceId` and `sortKey` = `<timestamp>#<alertType>`), `LATEST_TABLE` (existing), `ALLOWED_ORIGIN` (existing)
+* Path query (Contract C #4): `PATH_MAX_ACCURACY_M=100`, `PATH_GAP_SECONDS=60`
 
 ---
 
@@ -489,7 +548,7 @@ Share **Section 1** alongside the assigned track specification below so each tea
 
 * **Step 4 — Persistence & Query Serving:**
   * Persist snapshot matching **Contract B** and return `202 Accepted` with `{ "accepted": <count>, "deviceId": "<deviceId>" }`.
-  * Implement `GET /api/devices`, `GET /api/devices/{deviceId}/telemetry` and `GET /api/devices/{deviceId}/alerts` strictly matching **Contract C** (one `query` Lambda, routed by the API Gateway resource template; unknown routes return `404`).
+  * Implement `GET /api/devices`, `GET /api/devices/{deviceId}/telemetry`, `GET /api/devices/{deviceId}/alerts` and `GET /api/devices/{deviceId}/path` strictly matching **Contract C** (one `query` Lambda, routed by the API Gateway resource template; unknown routes return `404`).
   * Enable CORS for the Web Dashboard origin.
 
 * **Event Handlers (one Lambda per event family, same structure as the existing handlers):** the two battery events share one Lambda and the two connectivity events share another. Each Lambda serves two routes and chooses the event from the request path (the last segment, e.g. `battery-low`); an unknown path returns `404`. The contracts, validation and stored `alertType` stay separate per event.
@@ -540,7 +599,7 @@ Share **Section 1** alongside the assigned track specification below so each tea
 
 * **Infrastructure for Contracts D1 to F (built, AWS CDK):**
   * **Note:** the repository now deploys to AWS with CDK (`infrastructure/`, TypeScript, API Gateway, SQS, DynamoDB, Lambda). The Azure resource list above is stale.
-  * Four `POST /api/events/*` routes with API key required, two per Lambda: `battery` and `connectivity` (see Track 2). `GET /api/devices/{deviceId}/alerts` on the `query` Lambda (no API key). One `presence` Lambda (30 s timeout) with an EventBridge rule at `rate(1 minute)` and no retries.
+  * Four `POST /api/events/*` routes with API key required, two per Lambda: `battery` and `connectivity` (see Track 2). `GET /api/devices/{deviceId}/alerts` and `GET /api/devices/{deviceId}/path` on the `query` Lambda (no API key; the path route needs no new table or permission, it reads the history table the Lambda already reads). One `presence` Lambda (30 s timeout) with an EventBridge rule at `rate(1 minute)` and no retries.
   * An `ALERTS_TABLE` DynamoDB table (partition key `deviceId`, sort key `sortKey` = `<timestamp>#<alertType>`, TTL `expiresAt`), and the new names added to the `FUNCTIONS` list in `lambda-deploy.yml`.
   * Reserved concurrency: six Lambdas at 2 each (12) exceeds a new account's limit of 10 (set `lambdaReservedConcurrency` to `0` in that case, as `cdk.json` does). The presence Lambda needs none: its conditional writes make overlapping runs harmless.
   * Deploy order: the infrastructure deploy first (it creates `presence`), then the Lambda code deploy. `presence` is listed before `query` in `FUNCTIONS`, so a code deploy that runs too early stops before publishing the query code that exposes `presenceState`.

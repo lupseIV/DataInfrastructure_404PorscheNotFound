@@ -66,6 +66,11 @@ const PRESENCE_SETTINGS: Record<string, string> = {
   SUSPECT_AFTER_SECONDS: '60',
   OFFLINE_GRACE_SECONDS: '240',
 };
+/** Contract C #4 path selection; the values match the defaults in src/backend/functions/query/path.py. */
+const PATH_SETTINGS: Record<string, string> = {
+  PATH_MAX_ACCURACY_M: '100',
+  PATH_GAP_SECONDS: '60',
+};
 
 /**
  * The Python Lambdas of the backend. Code lives in src/backend:
@@ -76,7 +81,7 @@ const PRESENCE_SETTINGS: Record<string, string> = {
  *
  * - ingest:    POST /api/telemetry -> SQS FIFO queue
  * - processor: SQS FIFO queue -> DynamoDB snapshots
- * - query:     GET /api/devices, /api/devices/{deviceId}/telemetry and /api/devices/{deviceId}/alerts
+ * - query:     GET /api/devices, /api/devices/{deviceId}/telemetry, /alerts and /path
  * - presence:  EventBridge every minute -> marks silent devices SUSPECT / OFFLINE (Contract F)
  *
  * Event Lambdas (Contracts D1 to E2): one function per family, each serving two routes and
@@ -160,8 +165,9 @@ export class TelemetryFunctions extends Construct {
       ...tableEnv,
       ALERTS_TABLE: props.tables.alertsTable.tableName,
       ALLOWED_ORIGIN: props.allowedOrigin,
+      ...PATH_SETTINGS,
     });
-    props.tables.snapshotsTable.grantReadData(this.queryFunction);
+    props.tables.snapshotsTable.grantReadData(this.queryFunction); // also GET .../path
     props.tables.latestTable.grantReadData(this.queryFunction);
     props.tables.alertsTable.grantReadData(this.queryFunction); // GET .../alerts
 
